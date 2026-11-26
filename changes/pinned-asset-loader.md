@@ -1,0 +1,1 @@
+- **PinnedAsset** (PairedClient, Apple's systems): an AVURLAsset whose bytes come from a paired server through a PinnedSession, so AVPlayer plays media from a server whose certificate only pins vouch for. Each of AVFoundation's byte ranges is asked of the server with `Range` (206), streamed back as it comes, with the app's own headers.

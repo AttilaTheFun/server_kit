@@ -21,10 +21,8 @@ One library a concern, so an app takes only its side:
 | `ServerPairing` | One-time pairing codes, the throttle on wrong claims (by address, an IPv6 host's /64, and all at once), and per-device sessions (a token shown once, kept as its SHA-256) | `NetworkCore`, swift-crypto |
 | `ServerTLS` | A TLS front on every interface: a CA's certificate (a tailnet's, a domain's) for its names and the server's own for the rest, by the hello's SNI; each connection handed to the server's plain listener on loopback behind a secret line and a PROXY v1 line naming the client, with back-pressure, a connection cap and an idle timeout; Tailscale's certificates asked for and kept | SwiftNIO, swift-nio-ssl, Foundation |
 | `PairedCore` | A device's side, with no Foundation: its records of the servers it paired with (the server-id check, where a credential may go), their routes (TLS, loopback HTTP, SSH) ranked by where the device is, with their timings, and raced | `NetworkCore`, `PairingLink` |
-| `PairedClient` | `PairedCore`, and certificates checked by pins (`PinnedSession`, a URLSession on Apple's systems, pins looked up by host, redirects kept to their origin), the networks watched (or told of by the app) | `PairedCore`, swift-crypto |
+| `PairedClient` | `PairedCore`, and certificates checked by pins (`PinnedSession`, a URLSession on Apple's systems, pins looked up by host, redirects kept to their origin; `PinnedAsset` for AVPlayer), the networks watched (or told of by the app) | `PairedCore`, swift-crypto |
 | `PairingQR` | The QR a pairing link is shown as: made in plain Swift (byte mode, level L or M, the smallest symbol), drawn for a terminal, as SVG or PBM, or by an app's own view from its modules | nothing (no Foundation) |
-
-More are coming: a pinned asset loader for AVPlayer.
 
 ```swift
 .package(url: "https://github.com/AttilaTheFun/server_kit.git", exact: "0.1.0")
