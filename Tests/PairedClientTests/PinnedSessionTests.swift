@@ -49,10 +49,12 @@ final class Answer: ChannelInboundHandler, @unchecked Sendable {
     await #expect(throws: (any Error).self) { _ = try await PinnedSession(pins: other.pins).data(for: URLRequest(url: url)) }
     await #expect(throws: (any Error).self) { _ = try await PinnedSession(pins: PinSet([])).data(for: URLRequest(url: url)) }
     // One session for several servers: pins looked up by host.
-    let shared = PinnedSession { host in host == "127.0.0.1" ? identity.pins : PinSet([]) }
+    let shared = PinnedSession { host, at in host == "127.0.0.1" && at == port ? identity.pins : PinSet([]) }
+    let otherPort = PinnedSession { host, at in host == "127.0.0.1" && at == port + 1 ? identity.pins : PinSet([]) }
+    await #expect(throws: (any Error).self, "the same host, another port's pins") { _ = try await otherPort.data(for: URLRequest(url: url)) }
     let (_, viaShared) = try await shared.data(for: URLRequest(url: url))
     #expect((viaShared as? HTTPURLResponse)?.statusCode == 200)
-    let elsewhere = PinnedSession { _ in other.pins }
+    let elsewhere = PinnedSession { _, _ in other.pins }
     await #expect(throws: (any Error).self) { _ = try await elsewhere.data(for: URLRequest(url: url)) }
     await front.stop()
     try await inner.close()

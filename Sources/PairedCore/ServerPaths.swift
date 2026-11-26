@@ -27,22 +27,25 @@ public enum ServerPaths {
 
     /// How an app ranks what the kit can't know for it.
     public struct Ranking: Sendable, Equatable {
-        /// Where a home network's name (`.local`, `.lan`, `.home.arpa`, `.home`, a bare host) goes while the device
-        /// is on a private network: `.bonjour` by default, `.other` to rank it with public names.
+        /// Where a home network's name (`.local`, `.lan`, `.home.arpa`, `.home`, a bare host) goes: `.bonjour` by
+        /// default (`.unlikely` while the device is on no private network), or `.other` to rank it with public names,
+        /// on a private network or not.
         public var homeNames: Fit
 
         public init(homeNames: Fit = .bonjour) { self.homeNames = homeNames }
     }
 
-    /// How `address` (a URL's text, or a bare host) fits.
-    public static func fit(of address: String, network: NetworkInterfaces, ranking: Ranking = Ranking()) -> Fit {
+    /// How `address` (a URL's text, or a bare host) fits. With the device's networks unknown (`network` nil: a
+    /// browser can't read them), the device's own loopback is still first and everything else `.other`, in its order.
+    public static func fit(of address: String, network: NetworkInterfaces?, ranking: Ranking = Ranking()) -> Fit {
         guard let raw = PairingHost.host(of: address) else { return .unlikely }
         var host = raw.lowercased()
         if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
         if host.hasSuffix(".") { host = String(host.dropLast()) }
         if host == "localhost" || host == "::1" { return .loopback }
+        if let value = IPv4.parse(host), IPv4.isLoopback(value) { return .loopback }
+        guard let network else { return .other }
         if let value = IPv4.parse(host) {
-            if IPv4.isLoopback(value) { return .loopback }
             // The tailnet's addresses are the tailnet's, whatever mask its interface has.
             if IPv4.isTailnet(value) { return network.hasTailnet ? .overlay : .unlikely }
             if network.isOnLocalNetwork(host) { return .local }
@@ -52,14 +55,15 @@ public enum ServerPaths {
         if host.hasSuffix(".ts.net") { return network.hasTailnet ? .overlay : .unlikely }
         if host.hasSuffix(".local") || host.hasSuffix(".lan") || host.hasSuffix(".home.arpa") || host.hasSuffix(".home")
             || !host.contains(".") {
-            return network.hasLAN ? ranking.homeNames : .unlikely
+            if ranking.homeNames != .bonjour { return ranking.homeNames }
+            return network.hasLAN ? .bonjour : .unlikely
         }
         return .other
     }
 
     /// `addresses` best first: by fit, the one that answered last (`lastGood`) first among its equals, the rest in
     /// their order; each once.
-    public static func ranked(_ addresses: [String], network: NetworkInterfaces, lastGood: String? = nil,
+    public static func ranked(_ addresses: [String], network: NetworkInterfaces?, lastGood: String? = nil,
                               ranking: Ranking = Ranking()) -> [String] {
         var unique: [String] = []
         for address in addresses where !unique.contains(address) { unique.append(address) }
@@ -105,7 +109,8 @@ public struct RoutePolicy: Sendable, Equatable {
     /// SSH's handshake takes longer.
     public var sshHeadStart: Duration
     public var timeout: Duration
-    /// A route on this device or its network has less.
+    /// A route on this device or its network has less. (An app that gives it only on a first round passes another
+    /// policy, with `localTimeout` equal to `timeout`, for the rounds after.)
     public var localTimeout: Duration
 
     public init(canSSH: Bool = false, preferSSH: Bool = true, ranking: ServerPaths.Ranking = ServerPaths.Ranking(),
@@ -126,7 +131,7 @@ extension PairedServer {
     /// take (`credentialAddresses`) and, where the device can, its SSH paths. By fit, then, preferring SSH, SSH before
     /// the rest of its fit for the device's own networks and the tailnet (loopback always first, SSH or not), and the
     /// one that answered last first among its equals.
-    public func routes(network: NetworkInterfaces, policy: RoutePolicy = RoutePolicy()) -> [ServerRoute] {
+    public func routes(network: NetworkInterfaces?, policy: RoutePolicy = RoutePolicy()) -> [ServerRoute] {
         var all: [ServerRoute] = []
         func add(_ address: String, _ kind: ServerRoute.Kind) {
             guard !all.contains(where: { $0.address == address }) else { return }

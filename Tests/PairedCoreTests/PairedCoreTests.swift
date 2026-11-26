@@ -131,6 +131,14 @@ let spkiPin = Pin(.spki, sha256: String(repeating: "ab", count: 32))!
     #expect(ServerPaths.fit(of: "https://mac.local", network: home) == .bonjour)
     #expect(ServerPaths.fit(of: "https://mac.local", network: home, ranking: .init(homeNames: .other)) == .other)
     #expect(ServerPaths.fit(of: "https://mac.local", network: NetworkInterfaces([(String, String)]())) == .unlikely)
+    #expect(ServerPaths.fit(of: "https://mac.local", network: cafe, ranking: .init(homeNames: .other)) == .other, "the app's word off the LAN too")
+}
+
+@Test func anUnknownNetworkRanksAllButLoopbackAlike() {
+    let addresses = ["https://192.168.1.5", "https://8.8.8.8", "https://100.64.0.9", "https://mac.local", "http://127.0.0.1:8080"]
+    #expect(ServerPaths.ranked(addresses, network: nil) == ["http://127.0.0.1:8080", "https://192.168.1.5", "https://8.8.8.8",
+                                                            "https://100.64.0.9", "https://mac.local"])
+    #expect(addresses.dropLast().allSatisfy { ServerPaths.fit(of: $0, network: nil) == .other })
 }
 
 @Test func aCancelledRaceStartsNothingMore() async throws {

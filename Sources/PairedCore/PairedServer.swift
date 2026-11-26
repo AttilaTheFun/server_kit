@@ -80,7 +80,7 @@ public struct PairedServer: Codable, Hashable, Sendable {
     }
 
     /// Its addresses a credential may go to, best first for where the device is now.
-    public func ranked(network: NetworkInterfaces) -> [String] {
+    public func ranked(network: NetworkInterfaces?) -> [String] {
         ServerPaths.ranked(credentialAddresses, network: network, lastGood: lastGood)
     }
 

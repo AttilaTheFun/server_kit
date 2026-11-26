@@ -12,21 +12,22 @@ import Security
 // Apple's systems: Linux's Foundation gives a delegate no server trust to check.
 
 public final class PinnedSession: @unchecked Sendable {
-    public let session: URLSession
+    /// Kept to itself: a task given a delegate of its own would take the trust decision from the pins.
+    let session: URLSession
     let delegate: PinningDelegate
 
     /// One server's pins, for every host. `isPinned` says which hosts present the server's own certificate
     /// (PinTrust's by default).
     public convenience init(pins: PinSet, configuration: URLSessionConfiguration = .ephemeral,
                             isPinned: @escaping @Sendable (String) -> Bool = PinTrust.isPinned(host:)) {
-        self.init(configuration: configuration, isPinned: isPinned) { _ in pins }
+        self.init(configuration: configuration, isPinned: isPinned) { _, _ in pins }
     }
 
-    /// Several servers' pins, looked up by the host a connection is to (lowercased, without brackets); an empty set
-    /// for a host no server is known at refuses its own certificate.
+    /// Several servers' pins, looked up by the host (lowercased, without brackets) and port a connection is to (two
+    /// servers may share an address); an empty set for one no server is known at refuses its own certificate.
     public init(configuration: URLSessionConfiguration = .ephemeral,
                 isPinned: @escaping @Sendable (String) -> Bool = PinTrust.isPinned(host:),
-                pinsFor: @escaping @Sendable (String) -> PinSet) {
+                pinsFor: @escaping @Sendable (_ host: String, _ port: Int) -> PinSet) {
         delegate = PinningDelegate(pinsFor: pinsFor, isPinned: isPinned)
         session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
     }
@@ -81,12 +82,18 @@ public final class PinnedSession: @unchecked Sendable {
 }
 
 final class PinningDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate, @unchecked Sendable {
-    let pinsFor: @Sendable (String) -> PinSet
+    let pinsFor: @Sendable (String, Int) -> PinSet
     let isPinned: @Sendable (String) -> Bool
 
-    init(pinsFor: @escaping @Sendable (String) -> PinSet, isPinned: @escaping @Sendable (String) -> Bool) {
+    init(pinsFor: @escaping @Sendable (String, Int) -> PinSet, isPinned: @escaping @Sendable (String) -> Bool) {
         self.pinsFor = pinsFor
         self.isPinned = isPinned
+    }
+
+    /// A protection space's port: its own, or its scheme's where it gives none.
+    static func port(_ space: URLProtectionSpace) -> Int {
+        if space.port > 0 { return space.port }
+        return space.protocol?.lowercased() == "http" ? 80 : 443
     }
 
     /// A task's own challenge: the same check as the session's.
@@ -108,7 +115,7 @@ final class PinningDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegat
             return completionHandler(.performDefaultHandling, nil)
         }
         let host = challenge.protectionSpace.host
-        switch PinnedSession.evaluate(trust, host: host, pins: pinsFor(PinnedSession.bare(host)), isPinned: isPinned) {
+        switch PinnedSession.evaluate(trust, host: host, pins: pinsFor(PinnedSession.bare(host), Self.port(challenge.protectionSpace)), isPinned: isPinned) {
         case nil: completionHandler(.performDefaultHandling, nil)
         case true?: completionHandler(.useCredential, URLCredential(trust: trust))
         case false?: completionHandler(.cancelAuthenticationChallenge, nil)
