@@ -84,6 +84,7 @@ let package = Package(
             "PairedClient", "PairingLink", "NetworkCore", "ServerIdentity", "ServerTLS",
             .product(name: "NIOCore", package: "swift-nio"),
             .product(name: "NIOPosix", package: "swift-nio"),
+            .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),
         ]),
         .testTarget(name: "PairingQRTests", dependencies: ["PairingQR"]),
         .testTarget(name: "ServerTLSTests", dependencies: [
