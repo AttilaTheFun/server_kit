@@ -9,6 +9,8 @@
 // - ServerAddresses: where this machine is reached (its LAN, `.local` and tailnet addresses), read without a CLI.
 // - ServerIdentity: a server's own self-signed TLS identity, made once and kept, and the pins clients trust it by.
 // - ServerPairing: pairing offers with one-time codes, the throttle on wrong claims, and per-device sessions.
+// - PairedClient: a device's side: its paired servers' records, their addresses ranked and raced, certificates checked
+//   by pins (a URLSession on Apple's systems), the networks watched.
 // - ServerTLS: a TLS front on every interface (SwiftNIO), a CA's certificate or the server's own by SNI, handing each
 //   connection to the server's plain listener on loopback behind a PROXY v1 line; Tailscale's certificates.
 //
@@ -24,6 +26,7 @@ let package = Package(
         .library(name: "ServerAddresses", targets: ["ServerAddresses"]),
         .library(name: "ServerIdentity", targets: ["ServerIdentity"]),
         .library(name: "ServerPairing", targets: ["ServerPairing"]),
+        .library(name: "PairedClient", targets: ["PairedClient"]),
         .library(name: "ServerTLS", targets: ["ServerTLS"]),
     ],
     dependencies: [
@@ -48,6 +51,10 @@ let package = Package(
             "NetworkCore",
             .product(name: "Crypto", package: "swift-crypto"),
         ]),
+        .target(name: "PairedClient", dependencies: [
+            "NetworkCore", "PairingLink",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ]),
         .target(name: "ServerTLS", dependencies: [
             "NetworkCore",
             .product(name: "NIOCore", package: "swift-nio"),
@@ -66,6 +73,7 @@ let package = Package(
             .product(name: "SwiftASN1", package: "swift-asn1"),
         ]),
         .testTarget(name: "ServerPairingTests", dependencies: ["ServerPairing"]),
+        .testTarget(name: "PairedClientTests", dependencies: ["PairedClient", "PairingLink", "NetworkCore", "ServerIdentity"]),
         .testTarget(name: "ServerTLSTests", dependencies: [
             "ServerTLS", "ServerIdentity",
             .product(name: "NIOCore", package: "swift-nio"),
