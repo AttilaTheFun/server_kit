@@ -46,9 +46,7 @@ public struct ServerIdentity: Sendable, Equatable {
 
     /// An identity from DER certificates (leaf first) and its key (PEM).
     public init(certificateDERs: [[UInt8]], privateKeyPEM: String) throws {
-        let chain = try certificateDERs.map { der -> String in
-            try PEMDocument(type: "CERTIFICATE", derBytes: der).pemString + "\n"
-        }.joined()
+        let chain = certificateDERs.map { PEMDocument(type: "CERTIFICATE", derBytes: $0).pemString + "\n" }.joined()
         try self.init(certificateDERs: certificateDERs, privateKeyPEM: privateKeyPEM, chainPEM: chain)
     }
 
