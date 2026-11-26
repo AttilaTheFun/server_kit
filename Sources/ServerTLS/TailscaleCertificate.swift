@@ -241,11 +241,11 @@ public struct TailscaleCertificate: Sendable {
         /// Its exit status (a signal's number for one killed by a signal), once it has exited.
         func wait() async -> Int32 {
             let pid = pid
-            let status = await Task.detached { () -> Int32 in
+            let status = await Self.offPool { () -> Int32 in
                 var status: Int32 = 0
                 while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
                 return status
-            }.value
+            }
             lock.withLock { done = true }
             // WIFEXITED / WEXITSTATUS, WTERMSIG, by hand (they're macros).
             let signal = status & 0x7F
@@ -254,7 +254,7 @@ public struct TailscaleCertificate: Sendable {
 
         /// Everything read from `fd` to its end; it's closed after.
         static func readAll(_ fd: Int32) async -> [UInt8] {
-            await Task.detached { () -> [UInt8] in
+            await offPool { () -> [UInt8] in
                 var bytes: [UInt8] = []
                 var chunk = [UInt8](repeating: 0, count: 16_384)
                 while true {
@@ -263,7 +263,15 @@ public struct TailscaleCertificate: Sendable {
                 }
                 close(fd)
                 return bytes
-            }.value
+            }
+        }
+
+        /// `work`, which blocks (a read to its end, a wait), on a thread of its own: never one of Swift's few
+        /// cooperative threads, which a blocked call would hold from every other task (a 3-core runner's pool is 3).
+        static func offPool<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+            await withCheckedContinuation { continuation in
+                Thread.detachNewThread { continuation.resume(returning: work()) }
+            }
         }
     }
 }
