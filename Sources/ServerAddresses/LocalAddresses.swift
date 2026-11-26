@@ -1,4 +1,5 @@
 import Foundation
+@_exported import NetworkCore
 
 /// Where this server is reached, from its own interfaces: its LAN addresses, its tailnet's, and its `.local` name.
 public struct LocalAddresses: Sendable, Equatable {
@@ -19,8 +20,8 @@ public struct LocalAddresses: Sendable, Equatable {
     /// device elsewhere can't reach), and the host name `host`.
     public init(network: NetworkInterfaces, host: String?, excluding: (NetworkInterfaces.Interface) -> Bool = { _ in false }) {
         let kept = network.ipv4.filter { !excluding($0) }
-        lan = kept.filter { IPv4Text.isPrivate($0.address) }.map { IPv4Text.format($0.address) }
-        tailnet = kept.filter { IPv4Text.isTailnet($0.address) }.map { IPv4Text.format($0.address) }
+        lan = kept.filter { IPv4.isPrivate($0.address) }.map { IPv4.format($0.address) }
+        tailnet = kept.filter { IPv4.isTailnet($0.address) }.map { IPv4.format($0.address) }
         bonjour = host.flatMap(Self.bonjourName)
     }
 
@@ -38,7 +39,7 @@ public struct LocalAddresses: Sendable, Equatable {
     /// `mac` or `mac.local` as `mac.local`; nil for an address or an empty name.
     public static func bonjourName(_ host: String) -> String? {
         let name = host.hasSuffix(".") ? String(host.dropLast()) : host
-        guard !name.isEmpty, IPv4Text.parse(name) == nil, !name.contains(":") else { return nil }
+        guard !name.isEmpty, IPv4.parse(name) == nil, !name.contains(":") else { return nil }
         if name.lowercased().hasSuffix(".local") { return name }
         // A host name with a domain of its own (`mac.example.com`): its first label is the `.local` name.
         let first = name.split(separator: ".").first.map(String.init) ?? name

@@ -8,10 +8,10 @@ struct Fixed: NetworkReader {
 
 @Test func aMachinesAddressesAreItsLANsAndTailnetsBridgesLeftOut() {
     let network = NetworkInterfaces([
-        .init(address: IPv4Text.parse("192.168.1.5")!, mask: IPv4Text.parse("255.255.255.0")!, name: "en0"),
-        .init(address: IPv4Text.parse("100.73.57.115")!, mask: IPv4Text.parse("255.255.255.255")!, name: "utun4"),
-        .init(address: IPv4Text.parse("192.168.64.1")!, mask: IPv4Text.parse("255.255.255.0")!, name: "bridge100"),
-        .init(address: IPv4Text.parse("203.0.113.9")!, mask: IPv4Text.parse("255.255.255.0")!, name: "en1"),
+        .init(address: IPv4.parse("192.168.1.5")!, mask: IPv4.parse("255.255.255.0")!, name: "en0"),
+        .init(address: IPv4.parse("100.73.57.115")!, mask: IPv4.parse("255.255.255.255")!, name: "utun4"),
+        .init(address: IPv4.parse("192.168.64.1")!, mask: IPv4.parse("255.255.255.0")!, name: "bridge100"),
+        .init(address: IPv4.parse("203.0.113.9")!, mask: IPv4.parse("255.255.255.0")!, name: "en1"),
     ])
     let addresses = LocalAddresses.current(reader: Fixed(network: network), host: "Studio")
     #expect(addresses.lan == ["192.168.1.5"])
@@ -35,5 +35,5 @@ struct Fixed: NetworkReader {
 
 @Test func theSystemsInterfacesAreRead() {
     // Whatever this machine has: read without failing, loopback left out.
-    #expect(!SystemNetwork().read().ipv4.contains { IPv4Text.isLoopback($0.address) })
+    #expect(!SystemNetwork().read().ipv4.contains { IPv4.isLoopback($0.address) })
 }

@@ -1,66 +1,106 @@
+import NetworkCore
+
 // The link a server shows as a QR (or a person copies and pastes) for a device to pair with it:
 //
-//     <scheme>://pair?v=1&server=<https URL>&code=<one-time code>&address=<https URL>…&pin=<pin>…&id=<server id>&name=<name>
+//     <scheme>://pair?v=1&server=<https URL>&address=<https URL>…&pin=<pin>…&code=<one-time code>&id=<server id>&name=<name>
 //
-// - `server`: the address a device pairs at first (one a CA vouches for, like a tailnet's `*.ts.net` name, where one
-//   exists); `address`: every other one (each LAN address, its `.local` name), repeated.
-// - `pin`: the server's own certificate's pins (Pin), repeated: its current and, while it rotates, its next. An address
-//   that presents the server's own certificate (PinTrust.isPinned) is kept only with a pin, so a link can't send a
-//   device to a certificate it has no way to check.
-// - `code`: good once, for minutes (ServerPairing's offers); `id` and `name`: the server's, so a device knows a server
-//   it has paired with already, and what to call it.
+// - `server`, then `address` (repeated): the server's TLS addresses, the one to pair at first leading (one a CA vouches
+//   for, like a tailnet's `*.ts.net`, where there's one). `pin` (repeated): its own certificate's pins (Pin), current
+//   first. An address that presents the server's own certificate (PinTrust.isPinned) is kept only with a pin, so a
+//   link never sends a device to a certificate it has no way to check; a link without pins has only CA-vouched ones.
+// - `path` (repeated): the server's other ways in, any scheme (`http://…` on loopback, `ssh://…`), which an app handles
+//   itself; the kit says nothing of their trust.
+// - The credential, one of: `code` (good once, for minutes: ServerPairing's offers), `password` (a long-lived one, for a
+//   server that has one), or none (a server that asks nothing, or a way of the app's own: an `x-` field).
+// - `id`, `name`: the server's stable id and what to call it, so a device knows a server it has paired with already.
+// - `x-<name>` (any): an app's own fields, kept and written back as they are.
 //
-// Written and read with no Foundation, so it runs wherever Swift does, WebAssembly included. Links in a format of an
-// app's own from before this (`PairingLinkFormat`) are read through the same entry point, so a client reads both.
+// Written and read with no Foundation, so it runs wherever Swift does, WebAssembly included. A link in a format of an
+// app's own from before (`PairingLinkFormat`) is read through the same entry point, so a client reads both.
 
 public struct PairingLink: Hashable, Sendable {
-    /// The format's version: what `v=` says. A link with no `v` is a version 1 link (the first that servers wrote).
+    /// The format's version: what `v=` says. A link with no `v` is a version 1 link (the first servers wrote).
     public static let currentVersion = 1
 
-    public var scheme: String
-    public var code: String
-    /// The address to pair at first, then every other, each `https://…` and each once.
-    public var servers: [String]
-    public var pins: PinSet
+    /// How a device proves itself when it pairs.
+    public enum Credential: Hashable, Sendable {
+        /// A one-time code, good for minutes: claimed for a session of the device's own.
+        case oneTimeCode(String)
+        /// A long-lived password the server keeps.
+        case password(String)
+        /// Nothing in the link.
+        case none
+    }
+
+    public let scheme: String
+    /// The TLS addresses (`https://…`), the one to pair at first leading, each once.
+    public let servers: [String]
+    /// The other ways in, any scheme, each once.
+    public let paths: [String]
+    public let pins: PinSet
+    public var credential: Credential
     /// The server's own stable id, if it says one.
     public var serverID: String?
     /// What the server is called, for a person.
     public var name: String?
-    public var version: Int
+    /// An app's own fields (`x-<name>` in the link, the name here without `x-`).
+    public var extensions: [String: String]
+    public let version: Int
 
-    public init(scheme: String, code: String, servers: [String], pins: PinSet = PinSet([]), serverID: String? = nil,
-                name: String? = nil, version: Int = PairingLink.currentVersion) {
+    /// A link, if it can be written as it is: a lowercase scheme, every server `https://` with a host, an address that
+    /// presents the server's own certificate only with pins, every path with a host, at least one server or path, and a
+    /// version this writes.
+    public init?(scheme: String, servers: [String], paths: [String] = [], pins: PinSet = PinSet([]), credential: Credential,
+                 serverID: String? = nil, name: String? = nil, extensions: [String: String] = [:],
+                 version: Int = PairingLink.currentVersion) {
+        let schemeCharacters = scheme.unicodeScalars.allSatisfy { ("a"..."z").contains($0) || ("0"..."9").contains($0) || "+-.".unicodeScalars.contains($0) }
+        guard !scheme.isEmpty, schemeCharacters, version >= 1, version <= Self.currentVersion,
+              servers.allSatisfy(Self.isHTTPS),
+              !pins.isEmpty || !servers.contains(where: Self.presentsOwnCertificate),
+              paths.allSatisfy({ Self.host(of: $0) != nil }),
+              !(servers.isEmpty && paths.isEmpty),
+              extensions.keys.allSatisfy({ !$0.isEmpty }) else { return nil }
         self.scheme = scheme
-        self.code = code
         self.servers = Self.unique(servers)
+        self.paths = Self.unique(paths)
         self.pins = pins
+        self.credential = credential
         self.serverID = serverID
         self.name = name
+        self.extensions = extensions
         self.version = version
     }
 
     /// The address to pair at first.
     public var server: String? { servers.first }
 
+    /// The one-time code, if that's its credential.
+    public var code: String? {
+        if case .oneTimeCode(let code) = credential { return code }
+        return nil
+    }
+
     /// The link, as a QR shows it.
     public var text: String {
         var items: [(String, String)] = [("v", String(version))]
         if let first = servers.first { items.append(("server", first)) }
-        items.append(("code", code))
-        // The others and the pins together: a pinned address is no use without them.
-        if !pins.isEmpty {
-            items += servers.dropFirst().map { ("address", $0) }
-            items += pins.pins.map { ("pin", $0.description) }
-        } else {
-            items += servers.dropFirst().filter { !PinTrust.isPinned(host: Self.host(of: $0) ?? "") }.map { ("address", $0) }
+        items += servers.dropFirst().map { ("address", $0) }
+        items += pins.pins.map { ("pin", $0.description) }
+        items += paths.map { ("path", $0) }
+        switch credential {
+        case .oneTimeCode(let code): items.append(("code", code))
+        case .password(let password): items.append(("password", password))
+        case .none: break
         }
         if let serverID { items.append(("id", serverID)) }
         if let name { items.append(("name", name)) }
+        items += extensions.keys.sorted().map { ("x-" + $0, extensions[$0] ?? "") }
         return "\(scheme)://pair?" + items.map { "\(Query.encode($0.0))=\(Query.encode($0.1))" }.joined(separator: "&")
     }
 
     /// A link read, if `text` is one in any of `schemes` (the app's own: `nimbus`, `visor`…), or in one of `formats`.
-    /// Whitespace around it is ignored, and so is anything around it when it's pasted inside a sentence.
+    /// Pasted text is read too: the earliest link in it (its scheme in any case, as a keyboard capitalises the start of
+    /// a sentence), to its first whitespace, the punctuation a sentence puts after it left out.
     public static func parse(_ text: String, schemes: Set<String>, formats: [any PairingLinkFormat] = []) -> PairingLink? {
         let candidate = Self.extract(from: text, schemes: schemes) ?? text.trimmingWhitespace()
         if let link = Self.parseOwn(candidate, schemes: schemes) { return link }
@@ -75,49 +115,74 @@ public struct PairingLink: Hashable, Sendable {
         let scheme = String(text[..<separator.lowerBound]).lowercased()
         guard schemes.contains(scheme) else { return nil }
         let rest = text[separator.upperBound...]
-        guard let question = rest.firstIndex(of: "?"), rest[..<question].lowercased() == "pair" else { return nil }
-        let items = Query.parse(rest[rest.index(after: question)...])
+        guard let question = rest.firstIndex(of: "?"), rest[..<question].lowercased() == "pair",
+              let items = Query.parse(rest[rest.index(after: question)...]) else { return nil }
         func first(_ name: String) -> String? { items.first { $0.0 == name }?.1 }
         func all(_ name: String) -> [String] { items.filter { $0.0 == name }.map(\.1) }
-        guard let code = first("code"), !code.isEmpty,
-              let server = first("server"), Self.isHTTPS(server) else { return nil }
-        let version = first("v").flatMap(Int.init) ?? 1
+        let version = first("v").flatMap { Int($0) } ?? 1
         // A version this reader doesn't know may mean what it doesn't: not read.
         guard version >= 1, version <= Self.currentVersion else { return nil }
-        let pins = PinSet(all("pin").compactMap(Pin.init))
-        var servers = [server]
-        for address in all("address") where Self.isHTTPS(address) {
-            // An address with the server's own certificate, only with a pin to check it by.
-            if PinTrust.isPinned(host: Self.host(of: address) ?? ""), pins.isEmpty { continue }
-            servers.append(address)
+        let pins = PinSet(all("pin").compactMap { Pin($0) })
+        // `server`, then each `address`: https, and one with the server's own certificate only with pins.
+        let servers = ([first("server")].compactMap { $0 } + all("address")).filter { address in
+            Self.isHTTPS(address) && !(pins.isEmpty && Self.presentsOwnCertificate(address))
         }
-        return PairingLink(scheme: scheme, code: code, servers: servers, pins: pins,
-                           serverID: first("id").flatMap { $0.isEmpty ? nil : $0 },
-                           name: first("name").flatMap { $0.isEmpty ? nil : $0 }, version: version)
+        let credential: Credential
+        if let code = first("code"), !code.isEmpty {
+            credential = .oneTimeCode(code)
+        } else if let password = first("password"), !password.isEmpty {
+            credential = .password(password)
+        } else {
+            credential = .none
+        }
+        var extensions: [String: String] = [:]
+        for (name, value) in items where name.hasPrefix("x-") && name.count > 2 { extensions[String(name.dropFirst(2))] = value }
+        return PairingLink(scheme: scheme, servers: servers, paths: all("path").filter { Self.host(of: $0) != nil }, pins: pins,
+                           credential: credential, serverID: first("id").flatMap { $0.isEmpty ? nil : $0 },
+                           name: first("name").flatMap { $0.isEmpty ? nil : $0 }, extensions: extensions, version: version)
     }
 
-    /// The first `<scheme>://` link inside `text`, to its first whitespace: one pasted with words around it.
+    /// The earliest `<scheme>://` link inside `text` (its scheme in any case), to its first whitespace, with the
+    /// punctuation a sentence puts after it left out.
     static func extract(from text: String, schemes: Set<String>) -> String? {
-        // Schemes are lowercase, as links write them: found as they are (an index into a lowercased copy wouldn't be
-        // the text's).
-        for scheme in schemes.sorted() {
-            guard let start = text.firstRange(of: scheme + "://") else { continue }
-            let tail = text[start.lowerBound...]
-            let end = tail.firstIndex { $0.isWhitespace } ?? tail.endIndex
-            return String(tail[..<end])
+        let bytes = Array(text.utf8)
+        var earliest: Int?
+        for scheme in schemes {
+            let needle = Array((scheme + "://").utf8)
+            guard needle.count <= bytes.count else { continue }
+            for start in 0...(bytes.count - needle.count) {
+                if let found = earliest, start >= found { break }
+                // ASCII schemes, compared without case.
+                if zip(bytes[start..<(start + needle.count)], needle).allSatisfy({ Self.lower($0.0) == Self.lower($0.1) }) {
+                    earliest = start
+                    break
+                }
+            }
         }
-        return nil
+        guard let start = earliest else { return nil }
+        var end = start
+        while end < bytes.count, !Self.isSpace(bytes[end]) { end += 1 }
+        let trailing = Array(".,;:!?)]}>\"'".utf8)
+        while end > start, trailing.contains(bytes[end - 1]) { end -= 1 }
+        return String(decoding: bytes[start..<end], as: UTF8.self)
     }
+
+    static func lower(_ byte: UInt8) -> UInt8 { byte >= 0x41 && byte <= 0x5A ? byte + 0x20 : byte }
+    static func isSpace(_ byte: UInt8) -> Bool { byte == 0x20 || (byte >= 0x09 && byte <= 0x0D) }
 
     static func isHTTPS(_ address: String) -> Bool {
         address.lowercased().hasPrefix("https://") && host(of: address) != nil
     }
 
-    /// `https://<host>[:port][/…]`'s host, brackets and all for IPv6.
+    static func presentsOwnCertificate(_ address: String) -> Bool {
+        PinTrust.isPinned(host: host(of: address) ?? "")
+    }
+
+    /// `<scheme>://<host>[:port][/…]`'s host (brackets kept for IPv6); nil when there's none.
     public static func host(of address: String) -> String? {
         guard let separator = address.firstRange(of: "://") else { return nil }
         var rest = address[separator.upperBound...]
-        if let slash = rest.firstIndex(of: "/") { rest = rest[..<slash] }
+        if let slash = rest.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) { rest = rest[..<slash] }
         if let at = rest.lastIndex(of: "@") { rest = rest[rest.index(after: at)...] }
         if rest.hasPrefix("[") {
             guard let close = rest.firstIndex(of: "]") else { return nil }
@@ -142,12 +207,16 @@ public protocol PairingLinkFormat: Sendable {
 
 /// A query's `name=value` pairs, percent-coded (RFC 3986), with no Foundation.
 enum Query {
-    static func parse<S: StringProtocol>(_ query: S) -> [(String, String)] {
-        query.split(separator: "&").compactMap { pair in
+    /// Every pair; nil when one can't be decoded (bad percent-coding, or bytes that aren't UTF-8).
+    static func parse<S: StringProtocol>(_ query: S) -> [(String, String)]? {
+        var pairs: [(String, String)] = []
+        for pair in query.split(separator: "&") {
             let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
             guard let name = decode(parts[0]) else { return nil }
-            return (name, parts.count > 1 ? decode(parts[1]) ?? "" : "")
+            guard let value = parts.count > 1 ? decode(parts[1]) : "" else { return nil }
+            pairs.append((name, value))
         }
+        return pairs
     }
 
     static func decode<S: StringProtocol>(_ text: S) -> String? {
@@ -162,18 +231,21 @@ enum Query {
             default: bytes.append(byte)
             }
         }
-        return String(validating: bytes, as: UTF8.self)
+        // UTF-8 or nothing: decoded with repairs, then the same bytes back (not `String(validating:)`, which needs macOS
+        // 15 and iOS 18).
+        let string = String(decoding: bytes, as: UTF8.self)
+        return Array(string.utf8) == bytes ? string : nil
     }
 
     static func encode(_ text: String) -> String {
         var out = ""
+        let digits = Array("0123456789ABCDEF")
         for byte in text.utf8 {
             let unreserved = (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A) || (byte >= 0x30 && byte <= 0x39)
                 || byte == UInt8(ascii: "-") || byte == UInt8(ascii: ".") || byte == UInt8(ascii: "_") || byte == UInt8(ascii: "~")
             if unreserved {
                 out.unicodeScalars.append(Unicode.Scalar(byte))
             } else {
-                let digits = Array("0123456789ABCDEF")
                 out += "%" + String(digits[Int(byte >> 4)]) + String(digits[Int(byte & 0xF)])
             }
         }
