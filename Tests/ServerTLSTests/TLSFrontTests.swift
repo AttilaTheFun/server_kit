@@ -182,8 +182,13 @@ final class Client: ChannelInboundHandler, @unchecked Sendable {
     await #expect(throws: (any Error).self) { _ = try await rig.ask(nil, trusting: rig.own) }
     #expect(rig.logged.withLockedValue { $0 }.contains { $0.contains("too many connections from that address") })
     for channel in held { try await channel.close() }
-    try await Task.sleep(for: .milliseconds(100))
-    #expect(try await rig.ask(nil, trusting: rig.own) == "127.0.0.1 said ping", "room again once they close")
+    // Room again once the front has seen them close.
+    var answer: String?
+    for _ in 0..<20 where answer == nil {
+        try await Task.sleep(for: .milliseconds(100))
+        answer = try? await rig.ask(nil, trusting: rig.own)
+    }
+    #expect(answer == "127.0.0.1 said ping", "room again once they close; logged: \(rig.logged.withLockedValue { $0 })")
     try await rig.stop()
 }
 

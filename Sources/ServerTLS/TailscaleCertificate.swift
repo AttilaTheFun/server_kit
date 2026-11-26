@@ -145,35 +145,126 @@ public struct TailscaleCertificate: Sendable {
         var error: String
     }
 
-    /// Runs a program, both its outputs read as they come (one read to its end before the other could block on a full
-    /// pipe), stopped after `timeout`.
+    /// Runs a program in a process group of its own, both its outputs read as they come (one read to its end before
+    /// the other could block on a full pipe), stopped after `timeout`: the whole group asked to (TERM), then, 5 seconds
+    /// on, made to (KILL), so nothing it started is left holding its pipes or the answer.
     static func run(_ tool: String, _ arguments: [String], environment: [String: String], timeout: Duration) async throws -> Ran {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: tool)
-        process.arguments = arguments
-        process.environment = environment
-        process.standardInput = FileHandle.nullDevice
-        let out = Pipe(), err = Pipe()
-        process.standardOutput = out
-        process.standardError = err
-        let exited = AsyncStream<Void> { continuation in
-            process.terminationHandler = { _ in continuation.yield(); continuation.finish() }
-        }
-        try process.run()
-        async let output = Task.detached { out.fileHandleForReading.readDataToEndOfFile() }.value
-        async let error = Task.detached { err.fileHandleForReading.readDataToEndOfFile() }.value
-        // Past its time: asked to stop, then, a few seconds on, made to.
+        let child = try Spawned(tool, arguments, environment: environment)
         let watchdog = Task {
             try await Task.sleep(for: timeout)
-            guard process.isRunning else { return }
-            process.terminate()
+            guard !child.exited else { return }
+            kill(-child.pid, SIGTERM)
             try await Task.sleep(for: .seconds(5))
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            if !child.exited { kill(-child.pid, SIGKILL) }
         }
-        for await _ in exited {}
+        let output = Task { await Spawned.readAll(child.output) }
+        let error = Task { await Spawned.readAll(child.error) }
+        let status = await child.wait()
         watchdog.cancel()
-        let (o, e) = await (output, error)
-        return Ran(status: process.terminationStatus, output: String(decoding: o, as: UTF8.self), error: String(decoding: e, as: UTF8.self))
+        // Exited, but something it started may still hold the pipes: a moment's grace, then its group stopped (its
+        // group lives while any of it does, so the number names no one else's).
+        let read = Task { _ = (await output.value, await error.value) }
+        let grace = Task {
+            try await Task.sleep(for: .milliseconds(500))
+            kill(-child.pid, SIGKILL)
+        }
+        await read.value
+        grace.cancel()
+        let (o, e) = (await output.value, await error.value)
+        return Ran(status: status, output: String(decoding: o, as: UTF8.self), error: String(decoding: e, as: UTF8.self))
+    }
+
+    /// A program started with posix_spawn in a new process group, its standard output and error on pipes.
+    final class Spawned: @unchecked Sendable {
+        let pid: pid_t
+        let output: Int32
+        let error: Int32
+        private let lock = NSLock()
+        private var done = false
+
+        var exited: Bool { lock.withLock { done } }
+
+        struct Failure: Error, CustomStringConvertible {
+            var description: String
+        }
+
+        init(_ tool: String, _ arguments: [String], environment: [String: String]) throws {
+            var out: [Int32] = [0, 0], err: [Int32] = [0, 0]
+            guard pipe(&out) == 0 else { throw Failure(description: "no pipe: \(String(cString: strerror(errno)))") }
+            guard pipe(&err) == 0 else {
+                close(out[0]); close(out[1])
+                throw Failure(description: "no pipe: \(String(cString: strerror(errno)))")
+            }
+            #if canImport(Darwin)
+            var actions: posix_spawn_file_actions_t?
+            var attributes: posix_spawnattr_t?
+            #else
+            var actions = posix_spawn_file_actions_t()
+            var attributes = posix_spawnattr_t()
+            #endif
+            posix_spawn_file_actions_init(&actions)
+            posix_spawnattr_init(&attributes)
+            defer {
+                posix_spawn_file_actions_destroy(&actions)
+                posix_spawnattr_destroy(&attributes)
+            }
+            posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+            posix_spawn_file_actions_adddup2(&actions, out[1], 1)
+            posix_spawn_file_actions_adddup2(&actions, err[1], 2)
+            // Nothing else of this process's goes with it (its listeners, its clients' sockets): only 0, 1 and 2.
+            #if canImport(Darwin)
+            posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
+            #else
+            posix_spawn_file_actions_addclosefrom_np(&actions, 3)
+            posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
+            #endif
+            posix_spawnattr_setpgroup(&attributes, 0)
+            let argv = ([tool] + arguments).map { strdup($0) } + [nil]
+            let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+            defer {
+                for pointer in argv { free(pointer) }
+                for pointer in envp { free(pointer) }
+            }
+            var pid: pid_t = 0
+            let spawned = posix_spawn(&pid, tool, &actions, &attributes, argv, envp)
+            close(out[1])
+            close(err[1])
+            guard spawned == 0 else {
+                close(out[0]); close(err[0])
+                throw Failure(description: String(cString: strerror(spawned)))
+            }
+            self.pid = pid
+            output = out[0]
+            error = err[0]
+        }
+
+        /// Its exit status (a signal's number for one killed by a signal), once it has exited.
+        func wait() async -> Int32 {
+            let pid = pid
+            let status = await Task.detached { () -> Int32 in
+                var status: Int32 = 0
+                while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+                return status
+            }.value
+            lock.withLock { done = true }
+            // WIFEXITED / WEXITSTATUS, WTERMSIG, by hand (they're macros).
+            let signal = status & 0x7F
+            return signal == 0 ? (status >> 8) & 0xFF : signal
+        }
+
+        /// Everything read from `fd` to its end; it's closed after.
+        static func readAll(_ fd: Int32) async -> [UInt8] {
+            await Task.detached { () -> [UInt8] in
+                var bytes: [UInt8] = []
+                var chunk = [UInt8](repeating: 0, count: 16_384)
+                while true {
+                    let count = chunk.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+                    if count > 0 { bytes += chunk[0..<count] } else if count == -1 && errno == EINTR { continue } else { break }
+                }
+                close(fd)
+                return bytes
+            }.value
+        }
     }
 }
 #endif

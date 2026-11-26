@@ -3,6 +3,7 @@ import NIOCore
 import NIOPosix
 import NIOSSL
 import NIOTLS
+import NetworkCore
 
 // A server's TLS front: it ends TLS on every interface, with the pair ServerCertificates picks for each hello's SNI,
 // and passes each connection's bytes to the server's own plain listener on loopback, once its handshake is done, after
@@ -44,7 +45,7 @@ public final class TLSFront: Sendable {
 
     let limits: Limits
     let group: any EventLoopGroup
-    let log: (@Sendable (String) -> Void)?
+    let log: RefusalLog?
     private let state = NIOLockedValueBox(State())
 
     struct State {
@@ -54,13 +55,13 @@ public final class TLSFront: Sendable {
         var perAddress: [String: Int] = [:]
     }
 
-    /// `log` is told why connections are refused or closed early (a cap, a failed or slow handshake); nothing of
-    /// what they carry.
+    /// `log` is told why connections are refused or closed early (a cap, a failed or slow handshake), at most a line
+    /// of each kind every 10 seconds with a count of the rest; nothing of what they carry.
     public init(limits: Limits = Limits(), group: any EventLoopGroup = MultiThreadedEventLoopGroup.singleton,
                 log: (@Sendable (String) -> Void)? = nil) {
         self.limits = limits
         self.group = group
-        self.log = log
+        self.log = log.map { RefusalLog($0) }
     }
 
     /// A pair's certificates and key, read.
@@ -113,28 +114,28 @@ public final class TLSFront: Sendable {
             .serverChannelOption(ChannelOptions.backlog, value: 256)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
-                let address = Splice.address(channel.remoteAddress)
+                let address = Splice.address(channel.remoteAddress), place = Self.place(of: address)
                 let admitted: Result<NIOSSLContext, Refusal> = state.withLockedValue {
                     guard let context = $0.context else { return .failure(.noCertificate) }
                     guard $0.open < limits.maxConnections else { return .failure(.tooMany) }
-                    let fromThere = $0.perAddress[address, default: 0]
+                    let fromThere = $0.perAddress[place, default: 0]
                     if let most = limits.maxPerAddress, fromThere >= most { return .failure(.tooManyFrom) }
                     $0.open += 1
-                    $0.perAddress[address] = fromThere + 1
+                    $0.perAddress[place] = fromThere + 1
                     return .success(context)
                 }
                 let context: NIOSSLContext
                 switch admitted {
                 case .success(let admitted): context = admitted
                 case .failure(let refusal):
-                    log?("refused a connection from \(address): \(refusal)")
+                    log?.say("refused \(refusal)", "refused a connection from \(address): \(refusal)")
                     return channel.close()
                 }
                 channel.closeFuture.whenComplete { _ in
                     state.withLockedValue {
                         $0.open -= 1
-                        let left = ($0.perAddress[address] ?? 1) - 1
-                        $0.perAddress[address] = left > 0 ? left : nil
+                        let left = ($0.perAddress[place] ?? 1) - 1
+                        $0.perAddress[place] = left > 0 ? left : nil
                     }
                 }
                 return channel.eventLoop.makeCompletedFuture {
@@ -166,6 +167,13 @@ public final class TLSFront: Sendable {
         try? await bound?.close().get()
     }
 
+    /// Where connections are counted from for `maxPerAddress`: an IPv4 address, or an IPv6 host's /64 (one host has
+    /// all of it to pick addresses from).
+    static func place(of address: String) -> String {
+        guard address.contains(":"), let prefix = IPv6.prefix64(address) else { return address }
+        return prefix + "/64"
+    }
+
     enum Refusal: Error, CustomStringConvertible {
         case noCertificate, tooMany, tooManyFrom
         var description: String {
@@ -185,14 +193,14 @@ final class Splice: ChannelInboundHandler, @unchecked Sendable {
     let inner: Int
     let secret: String
     let limits: TLSFront.Limits
-    let log: (@Sendable (String) -> Void)?
+    let log: RefusalLog?
     private var waiting: [ByteBuffer] = []
     private var waitingBytes = 0
     private var peer: Channel?
     private var closed = false
     private var handshakeDeadline: Scheduled<Void>?
 
-    init(inner: Int, secret: String, limits: TLSFront.Limits, log: (@Sendable (String) -> Void)?) {
+    init(inner: Int, secret: String, limits: TLSFront.Limits, log: RefusalLog?) {
         self.inner = inner
         self.secret = secret
         self.limits = limits
@@ -203,7 +211,7 @@ final class Splice: ChannelInboundHandler, @unchecked Sendable {
         // A handshake not done in time: a scan, a plain-HTTP client, a socket held open to use up the caps.
         let channel = context.channel, log = log, address = Self.address(channel.remoteAddress)
         handshakeDeadline = context.eventLoop.scheduleTask(in: limits.handshake) {
-            log?("closed a connection from \(address): no handshake in time")
+            log?.say("handshake timeout", "closed a connection from \(address): no handshake in time")
             channel.close(promise: nil)
         }
     }
@@ -244,7 +252,7 @@ final class Splice: ChannelInboundHandler, @unchecked Sendable {
                     waiting = []
                     peer.flush()
                 case .failure(let error):
-                    log?("couldn't reach the inner listener: \(error)")
+                    log?.say("inner", "couldn't reach the inner listener: \(error)")
                     ours.close(promise: nil)
                 }
             }
@@ -279,7 +287,7 @@ final class Splice: ChannelInboundHandler, @unchecked Sendable {
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         if peer == nil, error is NIOSSLError || error is BoringSSLError {
-            log?("a handshake from \(Self.address(context.channel.remoteAddress)) failed: \(error)")
+            log?.say("handshake failed", "a handshake from \(Self.address(context.channel.remoteAddress)) failed: \(error)")
         }
         context.close(promise: nil)
     }

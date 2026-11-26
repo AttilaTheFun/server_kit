@@ -49,6 +49,7 @@ let package = Package(
             .product(name: "Crypto", package: "swift-crypto"),
         ]),
         .target(name: "ServerTLS", dependencies: [
+            "NetworkCore",
             .product(name: "NIOCore", package: "swift-nio"),
             .product(name: "NIOPosix", package: "swift-nio"),
             .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),

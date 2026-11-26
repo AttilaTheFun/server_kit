@@ -1,4 +1,5 @@
 import Foundation
+import NIOConcurrencyHelpers
 import NIOCore
 import NIOEmbedded
 import ServerIdentity
@@ -192,5 +193,38 @@ final class Events: ChannelInboundHandler, @unchecked Sendable {
     let started = Date()
     guard case .failure = await certificate.refresh(timeout: .milliseconds(200)) else { Issue.record("not stopped"); return }
     #expect(Date().timeIntervalSince(started) < 20)
+    // One whose child outlives it, holding its pipes: the answer doesn't wait for the child.
+    try standIn("#!/bin/sh\ntrap '' TERM\nsleep 60\n")
+    let again = Date()
+    guard case .failure = await certificate.refresh(timeout: .milliseconds(200)) else { Issue.record("not stopped"); return }
+    #expect(Date().timeIntervalSince(again) < 20)
+}
+#endif
+
+@Test func anIPv6HostIsCountedByItsSlash64() {
+    #expect(TLSFront.place(of: "2001:db8:1:2::5") == TLSFront.place(of: "2001:db8:1:2:abcd::9"))
+    #expect(TLSFront.place(of: "2001:db8:1:2::5") != TLSFront.place(of: "2001:db8:1:3::5"))
+    #expect(TLSFront.place(of: "192.168.1.9") == "192.168.1.9")
+}
+
+@Test func refusalsAreSaidWithoutFlooding() {
+    let said = NIOLockedValueBox<[String]>([])
+    let log = RefusalLog(every: .seconds(10)) { line in said.withLockedValue { $0.append(line) } }
+    let start = NIODeadline.now()
+    for _ in 0..<1000 { log.say("cap", "refused", now: start) }
+    log.say("handshake", "slow", now: start)
+    log.say("cap", "refused", now: start + .seconds(11))
+    #expect(said.withLockedValue { $0 } == ["refused", "slow", "refused (and 999 more like it since the last)"])
+}
+
+#if !os(iOS) && !os(tvOS) && !os(watchOS) && !os(visionOS)
+@Test func aCommandGetsNothingOfTheServersButItsOutputs() async throws {
+    // A descriptor this process holds open (a listener's, a client's socket): not open in the command it runs.
+    let held = open("/dev/null", O_RDONLY)
+    defer { close(held) }
+    let ran = try await TailscaleCertificate.run("/bin/sh", ["-c", "ls /proc/self/fd 2>/dev/null || ls /dev/fd"],
+                                                 environment: [:], timeout: .seconds(10))
+    let open = ran.output.split(separator: "\n").compactMap { Int($0) }
+    #expect(ran.status == 0 && !open.contains(Int(held)), "open in the command: \(open)")
 }
 #endif
