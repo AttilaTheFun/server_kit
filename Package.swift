@@ -73,7 +73,11 @@ let package = Package(
             .product(name: "SwiftASN1", package: "swift-asn1"),
         ]),
         .testTarget(name: "ServerPairingTests", dependencies: ["ServerPairing"]),
-        .testTarget(name: "PairedClientTests", dependencies: ["PairedClient", "PairingLink", "NetworkCore", "ServerIdentity"]),
+        .testTarget(name: "PairedClientTests", dependencies: [
+            "PairedClient", "PairingLink", "NetworkCore", "ServerIdentity", "ServerTLS",
+            .product(name: "NIOCore", package: "swift-nio"),
+            .product(name: "NIOPosix", package: "swift-nio"),
+        ]),
         .testTarget(name: "ServerTLSTests", dependencies: [
             "ServerTLS", "ServerIdentity",
             .product(name: "NIOCore", package: "swift-nio"),
