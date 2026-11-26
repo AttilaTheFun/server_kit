@@ -8,6 +8,8 @@ import ServerTLS
 import Testing
 @testable import PairedClient
 
+let secret = "0123456789abcdefSECRET"
+
 /// A plain HTTP server's stand-in behind the TLS front: reads the front's two lines, answers `ok`.
 final class Answer: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
@@ -17,7 +19,7 @@ final class Answer: ChannelInboundHandler, @unchecked Sendable {
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         var buffer = unwrapInboundIn(data)
         bytes += buffer.readBytes(length: buffer.readableBytes) ?? []
-        guard !answered, case .success? = ProxyV1.parse(bytes, secret: "s"), bytes.suffix(4) == Array("\r\n\r\n".utf8) else { return }
+        guard !answered, case .success? = ProxyV1.parse(bytes, secret: secret), bytes.suffix(4) == Array("\r\n\r\n".utf8) else { return }
         answered = true
         var answer = context.channel.allocator.buffer(capacity: 80)
         answer.writeString("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
@@ -32,8 +34,8 @@ final class Answer: ChannelInboundHandler, @unchecked Sendable {
         .childChannelInitializer { channel in channel.eventLoop.makeCompletedFuture { try channel.pipeline.syncOperations.addHandler(Answer()) } }
         .bind(host: "127.0.0.1", port: 0).get()
     let identity = try ServerIdentity.make(commonName: "Mac", dnsNames: ["mac.local"], ipv4: ["127.0.0.1"])
-    let front = TLSFront()
-    let port = try front.start(host: "127.0.0.1", port: 0, inner: inner.localAddress!.port!, secret: "s",
+    let front = TLSFront(group: group)
+    let port = try await front.start(host: "127.0.0.1", port: 0, inner: inner.localAddress!.port!, secret: secret,
                                certificates: ServerCertificates(ca: nil, own: PEMPair(chain: identity.chain, key: identity.key)))
     let url = URL(string: "https://127.0.0.1:\(port)/v1/hello")!
 
@@ -46,7 +48,7 @@ final class Answer: ChannelInboundHandler, @unchecked Sendable {
     let other = try ServerIdentity.make(commonName: "Other", dnsNames: ["other.local"])
     await #expect(throws: (any Error).self) { _ = try await PinnedSession(pins: other.pins).data(for: URLRequest(url: url)) }
     await #expect(throws: (any Error).self) { _ = try await PinnedSession(pins: PinSet([])).data(for: URLRequest(url: url)) }
-    front.stop()
+    await front.stop()
     try await inner.close()
     try await group.shutdownGracefully()
 }
