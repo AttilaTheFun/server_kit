@@ -1,26 +1,34 @@
-import Foundation
 import NIOConcurrencyHelpers
 import NIOCore
 import NIOPosix
 import NIOSSL
+import NIOTLS
 
 // A server's TLS front: it ends TLS on every interface, with the pair ServerCertificates picks for each hello's SNI,
-// and passes each connection's bytes to the server's own plain listener on loopback, after the start's secret and a
-// PROXY v1 line naming the client (ProxyV1), so the server knows a request came over TLS, and from whom, and never
-// takes a TLS client for this machine. New certificates (a CA's renewed) are taken up by connections made after
-// `use`, without a restart.
+// and passes each connection's bytes to the server's own plain listener on loopback, once its handshake is done, after
+// the secret's line and a PROXY v1 line naming the client (ProxyV1), so the server knows a request came over TLS, and
+// from whom, and never takes a TLS client for this machine. New certificates (a CA's renewed) are taken up by
+// connections made after `use`, without a restart.
 
-public final class TLSFront: @unchecked Sendable {
+public final class TLSFront: Sendable {
     public struct Limits: Sendable {
         /// Connections at once; more are closed as they come.
         public var maxConnections: Int
-        /// A connection that sends nothing this long (its handshake stalled, or idle) is closed.
+        /// Connections at once from one address (nil: no limit of its own).
+        public var maxPerAddress: Int?
+        /// A connection whose handshake isn't done in this long is closed.
+        public var handshake: TimeAmount
+        /// A connection with nothing read or written this long, either way, is closed (a stream the server writes to
+        /// a quiet client stays open).
         public var idle: TimeAmount
         /// What a connection may send before the inner listener answers its connect; more and it's closed.
         public var waitingCap: Int
 
-        public init(maxConnections: Int = 256, idle: TimeAmount = .minutes(5), waitingCap: Int = 1 << 20) {
+        public init(maxConnections: Int = 256, maxPerAddress: Int? = nil, handshake: TimeAmount = .seconds(10),
+                    idle: TimeAmount = .minutes(5), waitingCap: Int = 1 << 20) {
             self.maxConnections = maxConnections
+            self.maxPerAddress = maxPerAddress
+            self.handshake = handshake
             self.idle = idle
             self.waitingCap = waitingCap
         }
@@ -30,22 +38,30 @@ public final class TLSFront: @unchecked Sendable {
         public var description: String { "no certificate to answer with" }
     }
 
+    public struct BadSecret: Error, CustomStringConvertible {
+        public var description: String { "the secret must be 16 or more printable ASCII characters, without spaces" }
+    }
+
     let limits: Limits
-    private let group: MultiThreadedEventLoopGroup
+    let group: any EventLoopGroup
+    let log: (@Sendable (String) -> Void)?
     private let state = NIOLockedValueBox(State())
 
     struct State {
         var context: NIOSSLContext?
         var channel: Channel?
         var open = 0
+        var perAddress: [String: Int] = [:]
     }
 
-    public init(limits: Limits = Limits(), threads: Int = 2) {
+    /// `log` is told why connections are refused or closed early (a cap, a failed or slow handshake); nothing of
+    /// what they carry.
+    public init(limits: Limits = Limits(), group: any EventLoopGroup = MultiThreadedEventLoopGroup.singleton,
+                log: (@Sendable (String) -> Void)? = nil) {
         self.limits = limits
-        group = MultiThreadedEventLoopGroup(numberOfThreads: threads)
+        self.group = group
+        self.log = log
     }
-
-    deinit { try? group.syncShutdownGracefully() }
 
     /// A pair's certificates and key, read.
     struct Parsed: @unchecked Sendable {
@@ -85,37 +101,56 @@ public final class TLSFront: @unchecked Sendable {
         state.withLockedValue { $0.context = made }
     }
 
-    /// Listens on `port` (0: one the system picks) of `host`: every interface by default, IPv6 and IPv4 alike, or IPv4's
-    /// alone where the machine has no IPv6. Each connection is passed to `inner` on loopback. The port it listens on.
+    /// Listens on `port` (0: one the system picks) of `host`: every interface by default, IPv6 and IPv4 alike, or
+    /// IPv4's alone where the machine has no IPv6. Each connection is passed to `inner` on loopback, behind `secret`
+    /// (ProxyV1.isValidSecret). The port it listens on.
     @discardableResult
-    public func start(host: String? = nil, port: Int, inner: Int, secret: String, certificates: ServerCertificates) throws -> Int {
+    public func start(host: String? = nil, port: Int, inner: Int, secret: String, certificates: ServerCertificates) async throws -> Int {
+        guard ProxyV1.isValidSecret(secret) else { throw BadSecret() }
         try use(certificates)
-        let limits = limits, state = state
+        let limits = limits, state = state, log = log
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 256)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
-                let admitted: NIOSSLContext? = state.withLockedValue {
-                    guard $0.open < limits.maxConnections, let context = $0.context else { return nil }
+                let address = Splice.address(channel.remoteAddress)
+                let admitted: Result<NIOSSLContext, Refusal> = state.withLockedValue {
+                    guard let context = $0.context else { return .failure(.noCertificate) }
+                    guard $0.open < limits.maxConnections else { return .failure(.tooMany) }
+                    let fromThere = $0.perAddress[address, default: 0]
+                    if let most = limits.maxPerAddress, fromThere >= most { return .failure(.tooManyFrom) }
                     $0.open += 1
-                    return context
+                    $0.perAddress[address] = fromThere + 1
+                    return .success(context)
                 }
-                guard let context = admitted else { return channel.close() }
-                channel.closeFuture.whenComplete { _ in state.withLockedValue { $0.open -= 1 } }
+                let context: NIOSSLContext
+                switch admitted {
+                case .success(let admitted): context = admitted
+                case .failure(let refusal):
+                    log?("refused a connection from \(address): \(refusal)")
+                    return channel.close()
+                }
+                channel.closeFuture.whenComplete { _ in
+                    state.withLockedValue {
+                        $0.open -= 1
+                        let left = ($0.perAddress[address] ?? 1) - 1
+                        $0.perAddress[address] = left > 0 ? left : nil
+                    }
+                }
                 return channel.eventLoop.makeCompletedFuture {
                     try channel.pipeline.syncOperations.addHandler(NIOSSLServerHandler(context: context))
-                    try channel.pipeline.syncOperations.addHandler(IdleStateHandler(readTimeout: limits.idle))
-                    try channel.pipeline.syncOperations.addHandler(Splice(inner: inner, secret: secret, waitingCap: limits.waitingCap))
+                    try channel.pipeline.syncOperations.addHandler(IdleStateHandler(allTimeout: limits.idle))
+                    try channel.pipeline.syncOperations.addHandler(Splice(inner: inner, secret: secret, limits: limits, log: log))
                 }
             }
         let bound: Channel
         if let host {
-            bound = try bootstrap.bind(host: host, port: port).wait()
+            bound = try await bootstrap.bind(host: host, port: port).get()
         } else {
             do {
-                bound = try bootstrap.bind(host: "::", port: port).wait()
+                bound = try await bootstrap.bind(host: "::", port: port).get()
             } catch {
-                bound = try bootstrap.bind(host: "0.0.0.0", port: port).wait()
+                bound = try await bootstrap.bind(host: "0.0.0.0", port: port).get()
             }
         }
         state.withLockedValue { $0.channel = bound }
@@ -123,39 +158,74 @@ public final class TLSFront: @unchecked Sendable {
     }
 
     /// Stops listening; connections open now run on until they close.
-    public func stop() {
+    public func stop() async {
         let bound = state.withLockedValue { value -> Channel? in
             defer { value.channel = nil }
             return value.channel
         }
-        try? bound?.close().wait()
+        try? await bound?.close().get()
+    }
+
+    enum Refusal: Error, CustomStringConvertible {
+        case noCertificate, tooMany, tooManyFrom
+        var description: String {
+            switch self {
+            case .noCertificate: "no certificate"
+            case .tooMany: "too many connections"
+            case .tooManyFrom: "too many connections from that address"
+            }
+        }
     }
 }
 
-/// A TLS connection's plaintext, passed to the inner listener behind its preamble and PROXY v1 line, and its answers
-/// back.
+/// A TLS connection's plaintext, passed to the inner listener behind its preamble and PROXY v1 line once its handshake
+/// is done, and its answers back.
 final class Splice: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
     let inner: Int
     let secret: String
-    let waitingCap: Int
+    let limits: TLSFront.Limits
+    let log: (@Sendable (String) -> Void)?
     private var waiting: [ByteBuffer] = []
     private var waitingBytes = 0
     private var peer: Channel?
     private var closed = false
+    private var handshakeDeadline: Scheduled<Void>?
 
-    init(inner: Int, secret: String, waitingCap: Int) {
+    init(inner: Int, secret: String, limits: TLSFront.Limits, log: (@Sendable (String) -> Void)?) {
         self.inner = inner
         self.secret = secret
-        self.waitingCap = waitingCap
+        self.limits = limits
+        self.log = log
     }
 
-    func channelActive(context: ChannelHandlerContext) {
+    func handlerAdded(context: ChannelHandlerContext) {
+        // A handshake not done in time: a scan, a plain-HTTP client, a socket held open to use up the caps.
+        let channel = context.channel, log = log, address = Self.address(channel.remoteAddress)
+        handshakeDeadline = context.eventLoop.scheduleTask(in: limits.handshake) {
+            log?("closed a connection from \(address): no handshake in time")
+            channel.close(promise: nil)
+        }
+    }
+
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        if let event = event as? TLSUserEvent, case .handshakeCompleted = event {
+            handshakeDeadline?.cancel()
+            handshakeDeadline = nil
+            connect(context: context)
+        }
+        // Nothing read or written for the idle limit: a connection left open.
+        if event is IdleStateHandler.IdleStateEvent { return context.close(promise: nil) }
+        context.fireUserInboundEventTriggered(event)
+    }
+
+    /// The inner listener, reached only for a client that finished its handshake.
+    func connect(context: ChannelHandlerContext) {
         let ours = context.channel
         let client = ours.remoteAddress, local = ours.localAddress
         let line = ProxyV1.preamble(secret) + ProxyV1.line(client: Self.address(client), clientPort: client?.port ?? 0,
                                                            server: Self.address(local), serverPort: local?.port ?? 0)
-        let loop = context.eventLoop
+        let loop = context.eventLoop, log = log
         ClientBootstrap(group: loop)
             .channelInitializer { peer in
                 peer.eventLoop.makeCompletedFuture { try peer.pipeline.syncOperations.addHandler(Back(to: ours)) }
@@ -173,11 +243,11 @@ final class Splice: ChannelInboundHandler, @unchecked Sendable {
                     for buffer in waiting { peer.write(buffer, promise: nil) }
                     waiting = []
                     peer.flush()
-                case .failure:
+                case .failure(let error):
+                    log?("couldn't reach the inner listener: \(error)")
                     ours.close(promise: nil)
                 }
             }
-        context.fireChannelActive()
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -190,7 +260,7 @@ final class Splice: ChannelInboundHandler, @unchecked Sendable {
             return
         }
         waitingBytes += buffer.readableBytes
-        guard waitingBytes <= waitingCap else { return context.close(promise: nil) }
+        guard waitingBytes <= limits.waitingCap else { return context.close(promise: nil) }
         waiting.append(buffer)
     }
 
@@ -200,19 +270,17 @@ final class Splice: ChannelInboundHandler, @unchecked Sendable {
         context.fireChannelWritabilityChanged()
     }
 
-    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-        // Nothing read for the idle limit: a stalled handshake, or a connection left open.
-        if event is IdleStateHandler.IdleStateEvent { return context.close(promise: nil) }
-        context.fireUserInboundEventTriggered(event)
-    }
-
     func channelInactive(context: ChannelHandlerContext) {
         closed = true
+        handshakeDeadline?.cancel()
         peer?.close(promise: nil)
         context.fireChannelInactive()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        if peer == nil, error is NIOSSLError || error is BoringSSLError {
+            log?("a handshake from \(Self.address(context.channel.remoteAddress)) failed: \(error)")
+        }
         context.close(promise: nil)
     }
 
