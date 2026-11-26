@@ -166,6 +166,23 @@ public enum IPv6 {
         return bytes + tail
     }
 
+    /// Whether `text` is a tailnet's IPv6 address (Tailscale's `fd7a:115c:a1e0::/48`). A tailnet's nodes all share one
+    /// /96 of it, each its own address, assigned by the tailnet and not the node's to change: so a tailnet client is
+    /// one address, never its /64 (which would put every node of the tailnet in one place).
+    public static func isTailnet<S: StringProtocol>(_ text: S) -> Bool {
+        guard let bytes = parse(text) else { return false }
+        return bytes[0] == 0xFD && bytes[1] == 0x7A && bytes[2] == 0x11 && bytes[3] == 0x5C && bytes[4] == 0xA1 && bytes[5] == 0xE0
+    }
+
+    /// Where a client's IPv6 address counts from, for a throttle or a cap: its /64 (one host's many addresses), but
+    /// a tailnet's address alone (`isTailnet`); as lowercase hex, the /64 ending `/64`. Nil for what isn't IPv6.
+    public static func clientKey<S: StringProtocol>(_ text: S) -> String? {
+        guard let bytes = parse(text) else { return nil }
+        let digits = Array("0123456789abcdef")
+        let hex = { (part: ArraySlice<UInt8>) in part.map { String(digits[Int($0 >> 4)]) + String(digits[Int($0 & 0xF)]) }.joined() }
+        return isTailnet(text) ? hex(bytes[...]) : hex(bytes.prefix(8)) + "/64"
+    }
+
     /// Its first 64 bits, as lowercase hex: the network a host is on (`/64`), what one host's many addresses share.
     public static func prefix64<S: StringProtocol>(_ text: S) -> String? {
         guard let bytes = parse(text) else { return nil }

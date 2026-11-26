@@ -205,6 +205,9 @@ final class Events: ChannelInboundHandler, @unchecked Sendable {
     #expect(TLSFront.place(of: "2001:db8:1:2::5") == TLSFront.place(of: "2001:db8:1:2:abcd::9"))
     #expect(TLSFront.place(of: "2001:db8:1:2::5") != TLSFront.place(of: "2001:db8:1:3::5"))
     #expect(TLSFront.place(of: "192.168.1.9") == "192.168.1.9")
+    // A tailnet's nodes share one /96: each counts alone, so one node can't use up the others' room.
+    let a = "fd7a:115c:a1e0:ab12:4843:cd96:6201:1", b = "fd7a:115c:a1e0:ab12:4843:cd96:6201:2"
+    #expect(TLSFront.place(of: a) != TLSFront.place(of: b) && TLSFront.place(of: a) == TLSFront.place(of: a))
 }
 
 @Test func refusalsAreSaidWithoutFlooding() {

@@ -102,11 +102,13 @@ public final class ClaimThrottle: @unchecked Sendable {
         self.now = now
     }
 
-    /// Where an address counts from: an IPv6 address's /64, an IPv4-mapped one's IPv4, else the address as given.
+    /// Where an address counts from: an IPv6 address's /64 (a tailnet's address alone: its nodes share one /96, so
+    /// their /64 would be the whole tailnet's), an IPv4-mapped one's IPv4, else the address as given.
     public static func place(_ address: String) -> String {
         var bare = Substring(address)
         if bare.hasPrefix("["), let close = bare.firstIndex(of: "]") { bare = bare[bare.index(after: bare.startIndex)..<close] }
         if bare.lowercased().hasPrefix("::ffff:"), IPv4.parse(bare.dropFirst(7)) != nil { return String(bare.dropFirst(7)) }
+        if IPv6.isTailnet(bare), let key = IPv6.clientKey(bare) { return key }
         if let bytes = IPv6.parse(bare) {
             // Its /64, written as an address is: `2001:db8:1:2::/64`.
             let groups = stride(from: 0, to: 8, by: 2).map { String(UInt16(bytes[$0]) << 8 | UInt16(bytes[$0 + 1]), radix: 16) }
