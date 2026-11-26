@@ -3,9 +3,10 @@ import Network
 #endif
 import Foundation
 
-/// The device's networks changing (NWPathMonitor), said a moment after they settle (400 ms): each change a new
-/// `generation`, by which a client ranks its server's addresses again and moves to a better one. Where there's no
-/// Network framework, nothing changes (generation 0).
+/// The device's networks changing, said a moment after they settle (400 ms): each change a new `generation`, by which
+/// a client ranks its server's addresses again and moves to a better one. Told by NWPathMonitor where there's the
+/// Network framework, and by the app (`networkChanged()`) anywhere: Android's connectivity callbacks, a browser's
+/// `online` event.
 public final class NetworkWatch: @unchecked Sendable {
     public static let shared = NetworkWatch()
 
@@ -52,14 +53,15 @@ public final class NetworkWatch: @unchecked Sendable {
         let first = FirstTime()
         monitor.pathUpdateHandler = { [weak self] _ in
             if first.take() { return }
-            self?.changed()
+            self?.networkChanged()
         }
         monitor.start(queue: DispatchQueue(label: "server-kit.network-watch"))
         lock.withLock { self.monitor = monitor }
         #endif
     }
 
-    func changed(settle: Duration = .milliseconds(400)) {
+    /// The networks changed (or may have): said to `onChange`'s handlers once changes stop for `settle`.
+    public func networkChanged(settle: Duration = .milliseconds(400)) {
         lock.withLock {
             pending?.cancel()
             pending = Task { [weak self] in

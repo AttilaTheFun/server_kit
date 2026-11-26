@@ -48,8 +48,23 @@ final class Answer: ChannelInboundHandler, @unchecked Sendable {
     let other = try ServerIdentity.make(commonName: "Other", dnsNames: ["other.local"])
     await #expect(throws: (any Error).self) { _ = try await PinnedSession(pins: other.pins).data(for: URLRequest(url: url)) }
     await #expect(throws: (any Error).self) { _ = try await PinnedSession(pins: PinSet([])).data(for: URLRequest(url: url)) }
+    // One session for several servers: pins looked up by host.
+    let shared = PinnedSession { host in host == "127.0.0.1" ? identity.pins : PinSet([]) }
+    let (_, viaShared) = try await shared.data(for: URLRequest(url: url))
+    #expect((viaShared as? HTTPURLResponse)?.statusCode == 200)
+    let elsewhere = PinnedSession { _ in other.pins }
+    await #expect(throws: (any Error).self) { _ = try await elsewhere.data(for: URLRequest(url: url)) }
     await front.stop()
     try await inner.close()
     try await group.shutdownGracefully()
+}
+
+@Test func redirectsStayWithinTheirOrigin() {
+    let from = URL(string: "https://127.0.0.1:8443/a")!
+    #expect(PinnedSession.sameOrigin(from, URL(string: "https://127.0.0.1:8443/b")!))
+    #expect(!PinnedSession.sameOrigin(from, URL(string: "http://127.0.0.1:8443/b")!), "down to plain HTTP")
+    #expect(!PinnedSession.sameOrigin(from, URL(string: "https://localhost:8443/b")!), "another host")
+    #expect(!PinnedSession.sameOrigin(from, URL(string: "https://127.0.0.1:9443/b")!), "another port")
+    #expect(PinnedSession.sameOrigin(URL(string: "https://a.example.com/x")!, URL(string: "https://A.example.com:443/y")!))
 }
 #endif

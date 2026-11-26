@@ -6,18 +6,27 @@ import Security
 // A URLSession that trusts a paired server's own certificate by its pins, and every other name by the system's trust:
 // at a host that presents the server's own (PinTrust: an IP, a `.local` name, a bare name), the leaf is matched against
 // the pins and refused when none match; any other host (a tailnet's `*.ts.net`, a domain) is the system's to judge.
-// Data, downloads, uploads from a file and WebSockets alike, since all of them meet the same session's challenge.
+// Data, downloads, uploads from a file and WebSockets alike, since all of them meet the same session's challenge. One
+// session may serve several servers: their pins are looked up by host. A redirect is followed only to the same origin
+// (scheme, host and port), never down to plain HTTP or off to another host, which may not be the pinned server.
 // Apple's systems: Linux's Foundation gives a delegate no server trust to check.
 
 public final class PinnedSession: @unchecked Sendable {
     public let session: URLSession
-    public let pins: PinSet
 
-    /// `isPinned` says which hosts present the server's own certificate (PinTrust's by default).
-    public init(pins: PinSet, configuration: URLSessionConfiguration = .ephemeral,
-                isPinned: @escaping @Sendable (String) -> Bool = PinTrust.isPinned(host:)) {
-        self.pins = pins
-        session = URLSession(configuration: configuration, delegate: PinningDelegate(pins: pins, isPinned: isPinned), delegateQueue: nil)
+    /// One server's pins, for every host. `isPinned` says which hosts present the server's own certificate
+    /// (PinTrust's by default).
+    public convenience init(pins: PinSet, configuration: URLSessionConfiguration = .ephemeral,
+                            isPinned: @escaping @Sendable (String) -> Bool = PinTrust.isPinned(host:)) {
+        self.init(configuration: configuration, isPinned: isPinned) { _ in pins }
+    }
+
+    /// Several servers' pins, looked up by the host a connection is to (lowercased, without brackets); an empty set
+    /// for a host no server is known at refuses its own certificate.
+    public init(configuration: URLSessionConfiguration = .ephemeral,
+                isPinned: @escaping @Sendable (String) -> Bool = PinTrust.isPinned(host:),
+                pinsFor: @escaping @Sendable (String) -> PinSet) {
+        session = URLSession(configuration: configuration, delegate: PinningDelegate(pinsFor: pinsFor, isPinned: isPinned), delegateQueue: nil)
     }
 
     deinit { session.finishTasksAndInvalidate() }
@@ -38,6 +47,21 @@ public final class PinnedSession: @unchecked Sendable {
         session.webSocketTask(with: request)
     }
 
+    /// A host as `pinsFor` is asked it: lowercased, without IPv6's brackets.
+    static func bare(_ host: String) -> String {
+        var lower = host.lowercased()
+        if lower.hasPrefix("["), lower.hasSuffix("]") { lower = String(lower.dropFirst().dropLast()) }
+        return lower
+    }
+
+    /// Whether `next` is `from`'s origin: the same scheme, host and port (the scheme's own where none is given).
+    static func sameOrigin(_ from: URL?, _ next: URL?) -> Bool {
+        guard let from, let next, let scheme = from.scheme?.lowercased(), scheme == next.scheme?.lowercased(),
+              let host = from.host?.lowercased(), host == next.host?.lowercased() else { return false }
+        func port(_ url: URL) -> Int? { url.port ?? (scheme == "https" || scheme == "wss" ? 443 : scheme == "http" || scheme == "ws" ? 80 : nil) }
+        return port(from) == port(next)
+    }
+
     /// The pins' verdict on a server trust at `host`: nil for the system's own evaluation.
     static func evaluate(_ trust: SecTrust, host: String, pins: PinSet, isPinned: (String) -> Bool) -> Bool? {
         guard isPinned(host) else { return nil }
@@ -49,12 +73,18 @@ public final class PinnedSession: @unchecked Sendable {
 }
 
 final class PinningDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate, @unchecked Sendable {
-    let pins: PinSet
+    let pinsFor: @Sendable (String) -> PinSet
     let isPinned: @Sendable (String) -> Bool
 
-    init(pins: PinSet, isPinned: @escaping @Sendable (String) -> Bool) {
-        self.pins = pins
+    init(pinsFor: @escaping @Sendable (String) -> PinSet, isPinned: @escaping @Sendable (String) -> Bool) {
+        self.pinsFor = pinsFor
         self.isPinned = isPinned
+    }
+
+    /// A redirect followed only within its origin; any other is answered with the redirect itself.
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(PinnedSession.sameOrigin(task.currentRequest?.url ?? response.url, request.url) ? request : nil)
     }
 
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
@@ -63,7 +93,8 @@ final class PinningDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegat
               let trust = challenge.protectionSpace.serverTrust else {
             return completionHandler(.performDefaultHandling, nil)
         }
-        switch PinnedSession.evaluate(trust, host: challenge.protectionSpace.host, pins: pins, isPinned: isPinned) {
+        let host = challenge.protectionSpace.host
+        switch PinnedSession.evaluate(trust, host: host, pins: pinsFor(PinnedSession.bare(host)), isPinned: isPinned) {
         case nil: completionHandler(.performDefaultHandling, nil)
         case true?: completionHandler(.useCredential, URLCredential(trust: trust))
         case false?: completionHandler(.cancelAuthenticationChallenge, nil)
