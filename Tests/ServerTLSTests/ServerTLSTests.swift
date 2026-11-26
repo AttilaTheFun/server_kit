@@ -102,7 +102,8 @@ final class Inner: ChannelInboundHandler, @unchecked Sendable {
         answered = true
         var answer = context.channel.allocator.buffer(capacity: 64)
         answer.writeString("\(read.client) said \(String(decoding: rest, as: UTF8.self))")
-        context.writeAndFlush(NIOAny(answer)).whenComplete { _ in context.close(promise: nil) }
+        let channel = context.channel
+        channel.writeAndFlush(answer).whenComplete { _ in channel.close(promise: nil) }
     }
 }
 
@@ -153,15 +154,15 @@ final class Client: ChannelInboundHandler, @unchecked Sendable {
     func ask(_ serverName: String?, trusting identity: ServerIdentity) throws -> String {
         var configuration = TLSConfiguration.makeClientConfiguration()
         configuration.certificateVerification = .noHostnameVerification
-        let verify: NIOSSLCustomVerificationCallback = { chain, promise in
-            let shown = chain.first.flatMap { try? ServerIdentity.pins(ofCertificateDER: $0.toDERBytes()) }
-            promise.succeed(shown == identity.pins ? .certificateVerified : .failed)
-        }
         let context = try NIOSSLContext(configuration: configuration)
         let done = group.next().makePromise(of: String.self)
         _ = try ClientBootstrap(group: group)
             .channelInitializer { channel in
                 channel.eventLoop.makeCompletedFuture {
+                    let verify: NIOSSLCustomVerificationCallback = { chain, promise in
+                        let shown = chain.first.flatMap { try? ServerIdentity.pins(ofCertificateDER: $0.toDERBytes()) }
+                        promise.succeed(shown == identity.pins ? .certificateVerified : .failed)
+                    }
                     try channel.pipeline.syncOperations.addHandler(try NIOSSLClientHandler(context: context, serverHostname: serverName, customVerificationCallback: verify))
                     try channel.pipeline.syncOperations.addHandler(Client(done: done))
                 }

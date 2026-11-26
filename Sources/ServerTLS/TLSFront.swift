@@ -169,8 +169,8 @@ final class Splice: ChannelInboundHandler, @unchecked Sendable {
                     self.peer = peer
                     var head = peer.allocator.buffer(capacity: line.utf8.count)
                     head.writeString(line)
-                    peer.write(NIOAny(head), promise: nil)
-                    for buffer in waiting { peer.write(NIOAny(buffer), promise: nil) }
+                    peer.write(head, promise: nil)
+                    for buffer in waiting { peer.write(buffer, promise: nil) }
                     waiting = []
                     peer.flush()
                 case .failure:
@@ -183,7 +183,7 @@ final class Splice: ChannelInboundHandler, @unchecked Sendable {
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let buffer = unwrapInboundIn(data)
         if let peer {
-            peer.writeAndFlush(NIOAny(buffer), promise: nil)
+            peer.writeAndFlush(buffer, promise: nil)
             // The inner listener reading slower than the client sends: the client read no more until it catches up
             // (Back's writability), so nothing piles up here.
             if !peer.isWritable { context.channel.setOption(ChannelOptions.autoRead, value: false).whenComplete { _ in } }
@@ -231,7 +231,7 @@ final class Back: ChannelInboundHandler, @unchecked Sendable {
     init(to: Channel) { self.to = to }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        to.writeAndFlush(NIOAny(unwrapInboundIn(data)), promise: nil)
+        to.writeAndFlush(unwrapInboundIn(data), promise: nil)
         // The client reading slower than the server answers (a big download): the inner listener read no more until
         // it catches up (Splice's writability).
         if !to.isWritable { context.channel.setOption(ChannelOptions.autoRead, value: false).whenComplete { _ in } }
