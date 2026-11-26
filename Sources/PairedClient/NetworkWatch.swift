@@ -47,8 +47,13 @@ public final class NetworkWatch: @unchecked Sendable {
             return true
         }
         guard begin else { return }
+        // Its first report is the path as it is at the start, not a change.
         let monitor = NWPathMonitor()
-        monitor.pathUpdateHandler = { [weak self] _ in self?.changed() }
+        let first = FirstTime()
+        monitor.pathUpdateHandler = { [weak self] _ in
+            if first.take() { return }
+            self?.changed()
+        }
         monitor.start(queue: DispatchQueue(label: "server-kit.network-watch"))
         lock.withLock { self.monitor = monitor }
         #endif
@@ -66,6 +71,19 @@ public final class NetworkWatch: @unchecked Sendable {
                 }
                 for handler in told { handler(now) }
             }
+        }
+    }
+}
+
+/// True the first time it's taken, false after.
+final class FirstTime: @unchecked Sendable {
+    private let lock = NSLock()
+    private var taken = false
+
+    func take() -> Bool {
+        lock.withLock {
+            defer { taken = true }
+            return !taken
         }
     }
 }
