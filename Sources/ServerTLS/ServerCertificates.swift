@@ -27,7 +27,11 @@ public struct ServerCertificates: Sendable, Equatable {
 
     public init(caNames: Set<String> = [], caSuffixes: [String] = [], ca: PEMPair?, own: PEMPair?) {
         self.caNames = Set(caNames.map(Self.normalized))
-        self.caSuffixes = caSuffixes.map { $0.lowercased() }
+        // Each a whole label's: `ts.net` is `.ts.net`, never matching `evilts.net`.
+        self.caSuffixes = caSuffixes.map { suffix in
+            let lower = Self.normalized(suffix)
+            return lower.hasPrefix(".") ? lower : "." + lower
+        }
         self.ca = ca
         self.own = own
     }

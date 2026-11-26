@@ -64,24 +64,29 @@ let session = sessions.check(bearer)
 
 ## Serving TLS
 
-The server's own listener stays plain, on loopback; `TLSFront` ends TLS in front of it on every interface and hands each
-connection on after two lines: `SERVERKIT-TLS <secret>` (made at each start, so no other process on the machine can
-claim to be the front) and a PROXY v1 line naming the client. The server reads both with `ProxyV1.parse` before the
-request.
+The server's own listener stays plain, on loopback; `TLSFront` ends TLS in front of it on every interface and, once a
+client's handshake is done, hands its connection on after two lines: `SERVERKIT-TLS <secret>` (given at its start, so
+no other process on the machine can claim to be the front) and a PROXY v1 line naming the client. The server reads
+both before the request: `ProxyV1Handler` first in a SwiftNIO pipeline, or `ProxyV1.Reader` fed by a listener of any
+kind, which also checks the connection came from loopback and closes one that stays silent.
 
 ```swift
 let secret = SecretToken.random(bytes: 32)
 let tailnet = TailscaleCertificate(name: "mac.example.ts.net", folder: stateFolder)
 let certificates = ServerCertificates(caNames: ["mac.example.ts.net"], ca: tailnet?.kept(),
                                       own: PEMPair(chain: identity.chain, key: identity.key))
-let front = TLSFront()
-try front.start(port: 8443, inner: 8080, secret: secret, certificates: certificates)
+let front = TLSFront(limits: .init(maxPerAddress: 32)) { why in logger.info("\(why)") }
+try await front.start(port: 8443, inner: 8080, secret: secret, certificates: certificates)
 
 // Twice a day: a renewed certificate, taken up without a restart.
 if case .success(let pair) = await tailnet?.refresh() {
     try front.use(ServerCertificates(caNames: ["mac.example.ts.net"], ca: pair, own: certificates.own))
 }
 ```
+
+Its limits: 256 connections at once (and, if set, so many from one address), 10 seconds for a handshake, 5 minutes
+with nothing read or written either way (a stream to a quiet client stays open), 1 MB held before the inner listener
+answers. A client's half-close closes both ways.
 
 ## Developing
 

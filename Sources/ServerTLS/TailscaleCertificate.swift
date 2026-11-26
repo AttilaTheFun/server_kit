@@ -31,8 +31,8 @@ public struct TailscaleCertificate: Sendable {
             && name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == ".") }
     }
 
-    var chainFile: URL { folder.appendingPathComponent(name + ".crt") }
-    var keyFile: URL { folder.appendingPathComponent(name + ".key") }
+    /// The chain and its key, in one file (never one renewed without the other), readable by this user alone.
+    var file: URL { folder.appendingPathComponent(name + ".pem") }
 
     public struct Failure: Error, CustomStringConvertible {
         public let description: String
@@ -62,6 +62,11 @@ public struct TailscaleCertificate: Sendable {
                 + (said.isEmpty ? ")" : "; on its errors: \(said.prefix(300)))")))
         }
         do {
+            try PEMPair(chain: chain, key: key).check(now: Date())
+        } catch {
+            return .failure(Failure("tailscale cert \(name) gave a pair that won't serve: \(error)"))
+        }
+        do {
             try keep(chain: chain, key: key)
         } catch {
             return .failure(Failure("can't keep the certificate in \(folder.path): \(error)"))
@@ -69,30 +74,33 @@ public struct TailscaleCertificate: Sendable {
         return .success(PEMPair(chain: chain, key: key))
     }
 
-    /// The pair kept from the last time Tailscale gave it, if any.
-    public func kept() -> PEMPair? {
-        guard let chain = try? String(contentsOf: chainFile, encoding: .utf8), chain.contains("BEGIN CERTIFICATE"),
-              let key = try? String(contentsOf: keyFile, encoding: .utf8), key.contains("PRIVATE KEY") else { return nil }
-        return PEMPair(chain: chain, key: key)
+    /// The pair kept from the last time Tailscale gave it, if it's still good: a chain whose leaf the key is for, not
+    /// yet past its end.
+    public func kept(now: Date = Date()) -> PEMPair? {
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        let chain = Self.blocks(in: text, kind: "CERTIFICATE").joined()
+        guard !chain.isEmpty, let key = Self.blocks(in: text, kind: "PRIVATE KEY").first else { return nil }
+        let pair = PEMPair(chain: chain, key: key)
+        guard (try? pair.check(now: now)) != nil else { return nil }
+        return pair
     }
 
     func keep(chain: String, key: String) throws {
         let files = FileManager.default
         try files.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        // 0700 whatever made it; the key's file 0600 from the moment it's made (written beside, then moved in).
+        // 0700 whatever made it; the file 0600 from the moment it's made (written beside, then moved in whole).
         try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
-        try Data(chain.utf8).write(to: chainFile, options: .atomic)
-        let fresh = folder.appendingPathComponent(".\(name).key.\(UUID().uuidString)")
-        guard files.createFile(atPath: fresh.path, contents: Data(key.utf8), attributes: [.posixPermissions: 0o600]) else {
-            throw Failure("the key's file couldn't be made")
+        let fresh = folder.appendingPathComponent(".\(name).pem.\(UUID().uuidString)")
+        guard files.createFile(atPath: fresh.path, contents: Data((chain + key).utf8), attributes: [.posixPermissions: 0o600]) else {
+            throw Failure("the certificate's file couldn't be made")
         }
-        guard rename(fresh.path, keyFile.path) == 0 else {
+        guard rename(fresh.path, file.path) == 0 else {
             let code = errno
             try? files.removeItem(at: fresh)
-            throw Failure("the key's file couldn't be moved in: \(String(cString: strerror(code)))")
+            throw Failure("the certificate's file couldn't be moved in: \(String(cString: strerror(code)))")
         }
-        let mode = (try files.attributesOfItem(atPath: keyFile.path)[.posixPermissions] as? NSNumber)?.intValue
-        guard mode == 0o600 else { throw Failure("the key's file is \(String(mode ?? 0, radix: 8)), not 600") }
+        let mode = (try files.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue
+        guard mode == 0o600 else { throw Failure("the certificate's file is \(String(mode ?? 0, radix: 8)), not 600") }
     }
 
     /// The environment Tailscale's command runs in: the given one, with what a launchd job may lack and a login shell
@@ -154,9 +162,13 @@ public struct TailscaleCertificate: Sendable {
         try process.run()
         async let output = Task.detached { out.fileHandleForReading.readDataToEndOfFile() }.value
         async let error = Task.detached { err.fileHandleForReading.readDataToEndOfFile() }.value
+        // Past its time: asked to stop, then, a few seconds on, made to.
         let watchdog = Task {
             try await Task.sleep(for: timeout)
-            if process.isRunning { process.terminate() }
+            guard process.isRunning else { return }
+            process.terminate()
+            try await Task.sleep(for: .seconds(5))
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
         for await _ in exited {}
         watchdog.cancel()
