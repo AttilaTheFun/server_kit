@@ -13,6 +13,7 @@ import Security
 
 public final class PinnedSession: @unchecked Sendable {
     public let session: URLSession
+    let delegate: PinningDelegate
 
     /// One server's pins, for every host. `isPinned` says which hosts present the server's own certificate
     /// (PinTrust's by default).
@@ -26,13 +27,20 @@ public final class PinnedSession: @unchecked Sendable {
     public init(configuration: URLSessionConfiguration = .ephemeral,
                 isPinned: @escaping @Sendable (String) -> Bool = PinTrust.isPinned(host:),
                 pinsFor: @escaping @Sendable (String) -> PinSet) {
-        session = URLSession(configuration: configuration, delegate: PinningDelegate(pinsFor: pinsFor, isPinned: isPinned), delegateQueue: nil)
+        delegate = PinningDelegate(pinsFor: pinsFor, isPinned: isPinned)
+        session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
     }
 
     deinit { session.finishTasksAndInvalidate() }
 
     public func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         try await session.data(for: request)
+    }
+
+    /// The answer's bytes as they come. The pins' check is given to the task itself too: a streamed task's
+    /// challenge may not reach the session's delegate.
+    public func bytes(for request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        try await session.bytes(for: request, delegate: delegate)
     }
 
     public func download(for request: URLRequest) async throws -> (URL, URLResponse) {
@@ -79,6 +87,12 @@ final class PinningDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegat
     init(pinsFor: @escaping @Sendable (String) -> PinSet, isPinned: @escaping @Sendable (String) -> Bool) {
         self.pinsFor = pinsFor
         self.isPinned = isPinned
+    }
+
+    /// A task's own challenge: the same check as the session's.
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        urlSession(session, didReceive: challenge, completionHandler: completionHandler)
     }
 
     /// A redirect followed only within its origin; any other is answered with the redirect itself.
