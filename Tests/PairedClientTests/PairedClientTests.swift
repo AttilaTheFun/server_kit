@@ -39,7 +39,10 @@ func derOfLeaf(_ pem: String) -> [UInt8]? {
     defer { watch.stop(token) }
     watch.networkChanged(settle: .milliseconds(20))
     watch.networkChanged(settle: .milliseconds(20))
-    try await Task.sleep(for: .milliseconds(300))
+    // Said once it settles: waited for as long as a loaded machine needs (GitHub's 3-core runner took over 300 ms),
+    // then a moment more to see no second.
+    for _ in 0..<100 where told.values.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+    try await Task.sleep(for: .milliseconds(200))
     #expect(told.values == [1], "two changes at once: one")
 }
 

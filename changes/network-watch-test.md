@@ -1,0 +1,1 @@
+- (Tests only) NetworkWatch's settle test waits as long as a loaded machine needs.
