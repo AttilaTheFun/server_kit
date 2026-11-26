@@ -78,7 +78,7 @@ let package = Package(
             .product(name: "X509", package: "swift-certificates"),
             .product(name: "SwiftASN1", package: "swift-asn1"),
         ]),
-        .testTarget(name: "ServerPairingTests", dependencies: ["ServerPairing"]),
+        .testTarget(name: "ServerPairingTests", dependencies: ["ServerPairing", "NetworkCore"]),
         .testTarget(name: "PairedCoreTests", dependencies: ["PairedCore", "PairingLink", "NetworkCore"]),
         .testTarget(name: "PairedClientTests", dependencies: [
             "PairedClient", "PairingLink", "NetworkCore", "ServerIdentity", "ServerTLS",

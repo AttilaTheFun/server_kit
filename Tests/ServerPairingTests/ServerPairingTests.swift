@@ -1,4 +1,5 @@
 import Foundation
+import NetworkCore
 import Testing
 @testable import ServerPairing
 
@@ -56,6 +57,10 @@ final class Clock: @unchecked Sendable {
     #expect(throttle.lockedUntil("2001:db8:1:2::c") != nil && throttle.lockedUntil("2001:db8:1:3::a") == nil)
     #expect(ClaimThrottle.place("::ffff:192.0.2.1") == "192.0.2.1")
     #expect(ClaimThrottle.place("2001:db8:1:2:aaaa::1") == "2001:db8:1:2::/64", "written as an address is, for the log")
+    // A tailnet's addresses share one /96 (Visor's catch): each node is its own place, or one bad node locks out the
+    // owner's phone too.
+    #expect(ClaimThrottle.place("fd7a:115c:a1e0:ab12:4843:cd96:6201:1") != ClaimThrottle.place("fd7a:115c:a1e0:ab12:4843:cd96:6201:2"))
+    #expect(IPv6.isTailnet("fd7a:115c:a1e0::1") && !IPv6.isTailnet("fd7a:115c:a1e1::1") && !IPv6.isTailnet("2001:db8::1"))
 }
 
 @Test func manyPlacesGuessingTogetherAreRefusedToo() {

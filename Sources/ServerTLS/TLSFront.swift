@@ -168,10 +168,10 @@ public final class TLSFront: Sendable {
     }
 
     /// Where connections are counted from for `maxPerAddress`: an IPv4 address, or an IPv6 host's /64 (one host has
-    /// all of it to pick addresses from).
+    /// all of it to pick addresses from), but a tailnet's IPv6 address alone (its nodes share one /96).
     static func place(of address: String) -> String {
-        guard address.contains(":"), let prefix = IPv6.prefix64(address) else { return address }
-        return prefix + "/64"
+        guard address.contains(":"), let key = IPv6.clientKey(address) else { return address }
+        return key
     }
 
     enum Refusal: Error, CustomStringConvertible {
