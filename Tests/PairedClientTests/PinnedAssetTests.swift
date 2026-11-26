@@ -81,6 +81,16 @@ final class Media: ChannelInboundHandler, @unchecked Sendable {
     let tracks = try await pinned.asset.loadTracks(withMediaType: .audio)
     #expect(tracks.count == 1)
 
+    // The stream it reads by: a range's bytes exactly, in pieces as they come.
+    var ranged = URLRequest(url: url)
+    ranged.setValue("Bearer token", forHTTPHeaderField: "Authorization")
+    ranged.setValue("bytes=100-8099", forHTTPHeaderField: "Range")
+    let (response, pieces) = try await PinnedSession(pins: identity.pins).stream(for: ranged)
+    #expect((response as? HTTPURLResponse)?.statusCode == 206)
+    var got = Data()
+    for try await piece in pieces { got.append(piece) }
+    #expect(got == Data(wav[100...8099]))
+
     // Another server's pins: nothing read.
     let other = try ServerIdentity.make(commonName: "Other", dnsNames: ["other.local"])
     let refused = try #require(PinnedAsset(url: url, session: PinnedSession(pins: other.pins), headers: ["Authorization": "Bearer token"]))

@@ -1,0 +1,1 @@
+- **PinnedAsset reads a range in the pieces the network gives**, not a byte at a time (#7), through the new `PinnedSession.stream(for:)`: the response, then its body as an async stream of `Data`, with the pins' check and redirect rule as every other request.
