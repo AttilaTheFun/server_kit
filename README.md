@@ -20,8 +20,10 @@ One library a concern, so an app takes only its side:
 | `ServerIdentity` | A server's own TLS identity (ECDSA P-256, self-signed, made once and kept) or one supplied, and its pins: of its SubjectPublicKeyInfo, which outlives a re-issued certificate, and of the whole certificate | swift-crypto, swift-certificates |
 | `ServerPairing` | One-time pairing codes, the throttle on wrong claims (by address, an IPv6 host's /64, and all at once), and per-device sessions (a token shown once, kept as its SHA-256) | `NetworkCore`, swift-crypto |
 | `ServerTLS` | A TLS front on every interface: a CA's certificate (a tailnet's, a domain's) for its names and the server's own for the rest, by the hello's SNI; each connection handed to the server's plain listener on loopback behind a secret line and a PROXY v1 line naming the client, with back-pressure, a connection cap and an idle timeout; Tailscale's certificates asked for and kept | SwiftNIO, swift-nio-ssl, Foundation |
+| `PairedCore` | A device's side, with no Foundation: its records of the servers it paired with (the server-id check, where a credential may go), their routes (TLS, loopback HTTP, SSH) ranked by where the device is, with their timings, and raced | `NetworkCore`, `PairingLink` |
+| `PairedClient` | `PairedCore`, and certificates checked by pins (`PinnedSession`, a URLSession on Apple's systems, pins looked up by host, redirects kept to their origin), the networks watched (or told of by the app) | `PairedCore`, swift-crypto |
 
-More are coming: the client's pinned transport with address ranking and fallback, and the QR.
+More are coming: a pinned asset loader for AVPlayer, and the QR.
 
 ```swift
 .package(url: "https://github.com/AttilaTheFun/server_kit.git", exact: "0.1.0")

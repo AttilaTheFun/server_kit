@@ -1,0 +1,7 @@
+- **PairedCore** and **PairedClient**, new libraries, a device's side.
+  - PairedCore (no Foundation): `PairedServer`, one record a server. `answers(as:)` and `check(answeredID:)` refuse another server's id, or none where the record has one. `credentialAddresses` gives only `https` (a pinned one only with pins) and `http` on loopback. `sshPaths`. `merging(_:answeredAt:)` takes what a server says of itself only over TLS. `PairedServers` keeps one record per server id.
+  - Routing: `ServerPaths` ranks addresses by where the device is, with an app's `Ranking` for home names. `PairedServer.routes(network:policy:)` gives TLS, loopback HTTP and SSH routes in order, each with its head start and timeout (`RoutePolicy`: SSH first on the LAN and tailnet where preferred). `PathRace` returns the first to answer as soon as it does, starts nothing more once cancelled, and moves past a path out of time.
+  - PairedClient re-exports PairedCore and adds:
+    - `CertificatePins`: SPKI and whole-certificate SHA-256s, read by a small DER walk;
+    - `PinnedSession` (Apple's systems): a URLSession that trusts a server's own certificate by its pins alone, pins looked up by host, redirects followed only within their origin;
+    - `NetworkWatch`: settled changes, from NWPathMonitor or `networkChanged()`.
