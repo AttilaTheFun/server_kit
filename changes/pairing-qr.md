@@ -1,0 +1,1 @@
+- **PairingQR**, a new library: `QRCode` (from Visor's encoder: byte mode, level L or M, the smallest version, the mask with the least penalty; plain Swift, no Foundation), `QRCode.best` (M where it takes no bigger a symbol), and drawn as text for a terminal, as SVG or as PBM.

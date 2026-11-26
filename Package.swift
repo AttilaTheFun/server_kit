@@ -11,6 +11,8 @@
 // - ServerPairing: pairing offers with one-time codes, the throttle on wrong claims, and per-device sessions.
 // - PairedCore: a device's side, with no Foundation: its paired servers' records, their routes ranked and raced.
 // - PairedClient: PairedCore, and certificates checked by pins (a URLSession on Apple's systems), the networks watched.
+// - PairingQR: the QR a server shows its pairing link as, made in plain Swift (no Foundation), drawn for a terminal,
+//   as SVG or PBM, or by an app's own view.
 // - ServerTLS: a TLS front on every interface (SwiftNIO), a CA's certificate or the server's own by SNI, handing each
 //   connection to the server's plain listener on loopback behind a PROXY v1 line; Tailscale's certificates.
 //
@@ -28,6 +30,7 @@ let package = Package(
         .library(name: "ServerPairing", targets: ["ServerPairing"]),
         .library(name: "PairedCore", targets: ["PairedCore"]),
         .library(name: "PairedClient", targets: ["PairedClient"]),
+        .library(name: "PairingQR", targets: ["PairingQR"]),
         .library(name: "ServerTLS", targets: ["ServerTLS"]),
     ],
     dependencies: [
@@ -57,6 +60,7 @@ let package = Package(
             "PairedCore", "NetworkCore", "PairingLink",
             .product(name: "Crypto", package: "swift-crypto"),
         ]),
+        .target(name: "PairingQR"),
         .target(name: "ServerTLS", dependencies: [
             "NetworkCore",
             .product(name: "NIOCore", package: "swift-nio"),
@@ -81,6 +85,7 @@ let package = Package(
             .product(name: "NIOCore", package: "swift-nio"),
             .product(name: "NIOPosix", package: "swift-nio"),
         ]),
+        .testTarget(name: "PairingQRTests", dependencies: ["PairingQR"]),
         .testTarget(name: "ServerTLSTests", dependencies: [
             "ServerTLS", "ServerIdentity",
             .product(name: "NIOCore", package: "swift-nio"),
