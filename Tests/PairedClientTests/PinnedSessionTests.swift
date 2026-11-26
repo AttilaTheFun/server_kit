@@ -28,7 +28,6 @@ final class Answer: ChannelInboundHandler, @unchecked Sendable {
 
 @Test func aPinnedSessionTrustsTheServersOwnCertificateByItsPinsAlone() async throws {
     let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    defer { try? group.syncShutdownGracefully() }
     let inner = try await ServerBootstrap(group: group)
         .childChannelInitializer { channel in channel.eventLoop.makeCompletedFuture { try channel.pipeline.syncOperations.addHandler(Answer()) } }
         .bind(host: "127.0.0.1", port: 0).get()
@@ -36,10 +35,6 @@ final class Answer: ChannelInboundHandler, @unchecked Sendable {
     let front = TLSFront()
     let port = try front.start(host: "127.0.0.1", port: 0, inner: inner.localAddress!.port!, secret: "s",
                                certificates: ServerCertificates(ca: nil, own: PEMPair(chain: identity.chain, key: identity.key)))
-    defer {
-        front.stop()
-        try? inner.close().wait()
-    }
     let url = URL(string: "https://127.0.0.1:\(port)/v1/hello")!
 
     let (data, response) = try await PinnedSession(pins: identity.pins).data(for: URLRequest(url: url))
@@ -51,5 +46,8 @@ final class Answer: ChannelInboundHandler, @unchecked Sendable {
     let other = try ServerIdentity.make(commonName: "Other", dnsNames: ["other.local"])
     await #expect(throws: (any Error).self) { _ = try await PinnedSession(pins: other.pins).data(for: URLRequest(url: url)) }
     await #expect(throws: (any Error).self) { _ = try await PinnedSession(pins: PinSet([])).data(for: URLRequest(url: url)) }
+    front.stop()
+    try await inner.close()
+    try await group.shutdownGracefully()
 }
 #endif
