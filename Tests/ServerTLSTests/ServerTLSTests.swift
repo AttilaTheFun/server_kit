@@ -50,6 +50,7 @@ let ownPair = PEMPair(chain: "own chain", key: "own key")
     refused("SERVERKIT-TLS s3cret\r\n" + String(repeating: "x", count: 120), "too long, no line end")
 }
 
+#if !os(iOS) && !os(tvOS) && !os(watchOS) && !os(visionOS)
 @Test func tailnetNamesAreTold() {
     #expect(TailscaleCertificate.isName("mac.example.ts.net"))
     for name in ["ts.net", ".ts.net", "mac.example.com", "mac;rm.ts.net", "-x.ts.net"] { #expect(!TailscaleCertificate.isName(name), "\(name)") }
@@ -81,6 +82,8 @@ let ownPair = PEMPair(chain: "own chain", key: "own key")
     #expect(failure.description.contains("exit 3") && failure.description.contains("not logged in"))
     #expect(certificate.kept() == pair, "the last one kept")
 }
+
+#endif
 
 /// The inner listener's stand-in: reads the preamble and PROXY line, then answers with the client it names and what
 /// came after.

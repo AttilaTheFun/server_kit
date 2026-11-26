@@ -1,3 +1,4 @@
+#if !os(iOS) && !os(tvOS) && !os(watchOS) && !os(visionOS)
 import Foundation
 
 // A tailnet's certificate for a server's TLS front: asked of Tailscale's own command (`tailscale cert`), which gets it
@@ -163,3 +164,4 @@ public struct TailscaleCertificate: Sendable {
         return Ran(status: process.terminationStatus, output: String(decoding: o, as: UTF8.self), error: String(decoding: e, as: UTF8.self))
     }
 }
+#endif
