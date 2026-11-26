@@ -80,28 +80,30 @@ public final class PinnedAsset: NSObject, AVAssetResourceLoaderDelegate, @unchec
         for (name, value) in headers { asked.setValue(value, forHTTPHeaderField: name) }
         asked.setValue("bytes=\(start)-\(end.map(String.init) ?? "")", forHTTPHeaderField: "Range")
         do {
-            let (bytes, response) = try await session.bytes(for: asked)
+            let (response, pieces) = try await session.stream(for: asked)
             guard let http = response as? HTTPURLResponse, http.statusCode == 206 || http.statusCode == 200 else {
                 throw Failure(status: (response as? HTTPURLResponse)?.statusCode ?? 0)
             }
             if let information = loading.contentInformationRequest {
                 Self.describe(information, from: http)
             }
-            // A 200 is the whole resource: what's before the range skipped.
-            var skip = http.statusCode == 200 ? start : 0
             if let data = loading.dataRequest {
-                var chunk = Data()
-                chunk.reserveCapacity(Self.chunk)
-                for try await byte in bytes {
-                    if skip > 0 { skip -= 1; continue }
-                    chunk.append(byte)
-                    if chunk.count == Self.chunk {
-                        data.respond(with: chunk)
-                        chunk.removeAll(keepingCapacity: true)
+                // A 200 is the whole resource: what's before the range skipped. The range's end kept to, whatever more
+                // comes.
+                var skip = http.statusCode == 200 ? start : 0
+                var position = start
+                for try await var piece in pieces {
+                    if skip > 0 {
+                        let dropped = Int(min(Int64(piece.count), skip))
+                        piece.removeFirst(dropped)
+                        skip -= Int64(dropped)
+                        if piece.isEmpty { continue }
                     }
-                    if let end, data.currentOffset + Int64(chunk.count) > end { break }
+                    if let end, position + Int64(piece.count) > end + 1 { piece = piece.prefix(Int(end + 1 - position)) }
+                    data.respond(with: piece)
+                    position += Int64(piece.count)
+                    if let end, position > end { break }
                 }
-                if !chunk.isEmpty { data.respond(with: chunk) }
             }
             try Task.checkCancellation()
             loading.finishLoading()
@@ -111,9 +113,6 @@ public final class PinnedAsset: NSObject, AVAssetResourceLoaderDelegate, @unchec
             if !Task.isCancelled { loading.finishLoading(with: error) }
         }
     }
-
-    /// Bytes handed to AVFoundation at a time.
-    static let chunk = 64 * 1024
 
     /// What the resource is, from an answer: its length (from `Content-Range`'s total, or a whole answer's length),
     /// its type, and whether it's read by ranges.

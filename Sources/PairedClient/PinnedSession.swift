@@ -44,6 +44,19 @@ public final class PinnedSession: @unchecked Sendable {
         try await session.bytes(for: request, delegate: delegate)
     }
 
+    /// The answer, and its body in pieces as they come off the network (no per-byte loop): for media, big downloads.
+    /// The task gets the pins' check and redirect rule as every other; ending the stream early cancels it.
+    public func stream(for request: URLRequest) async throws -> (URLResponse, AsyncThrowingStream<Data, any Error>) {
+        let streamer = Streamer(pinning: delegate)
+        let task = session.dataTask(with: request)
+        task.delegate = streamer
+        return try await withTaskCancellationHandler {
+            try await streamer.start(task)
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
     public func download(for request: URLRequest) async throws -> (URL, URLResponse) {
         try await session.download(for: request)
     }
@@ -120,6 +133,65 @@ final class PinningDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegat
         case true?: completionHandler(.useCredential, URLCredential(trust: trust))
         case false?: completionHandler(.cancelAuthenticationChallenge, nil)
         }
+    }
+}
+
+/// One streamed task's delegate: its response handed back once, its body's pieces yielded as they come.
+final class Streamer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    let pinning: PinningDelegate
+    private let lock = NSLock()
+    private var response: CheckedContinuation<URLResponse, any Error>?
+    private let pieces: AsyncThrowingStream<Data, any Error>
+    private let yield: AsyncThrowingStream<Data, any Error>.Continuation
+
+    init(pinning: PinningDelegate) {
+        self.pinning = pinning
+        (pieces, yield) = AsyncThrowingStream<Data, any Error>.makeStream()
+    }
+
+    func start(_ task: URLSessionDataTask) async throws -> (URLResponse, AsyncThrowingStream<Data, any Error>) {
+        yield.onTermination = { _ in task.cancel() }
+        let answer = try await withCheckedThrowingContinuation { continuation in
+            lock.withLock { response = continuation }
+            task.resume()
+        }
+        return (answer, pieces)
+    }
+
+    private func answered(_ result: Result<URLResponse, any Error>) {
+        lock.withLock { () -> CheckedContinuation<URLResponse, any Error>? in
+            defer { response = nil }
+            return response
+        }?.resume(with: result)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+        answered(.success(response))
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        yield.yield(data)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        if let error {
+            answered(.failure(error))
+            yield.finish(throwing: error)
+        } else {
+            yield.finish()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        pinning.urlSession(session, task: task, didReceive: challenge, completionHandler: completionHandler)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        pinning.urlSession(session, task: task, willPerformHTTPRedirection: response, newRequest: request, completionHandler: completionHandler)
     }
 }
 #endif
