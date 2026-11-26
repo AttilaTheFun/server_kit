@@ -220,8 +220,12 @@ final class Events: ChannelInboundHandler, @unchecked Sendable {
 #if !os(iOS) && !os(tvOS) && !os(watchOS) && !os(visionOS)
 @Test func aCommandGetsNothingOfTheServersButItsOutputs() async throws {
     // A descriptor this process holds open (a listener's, a client's socket): not open in the command it runs.
-    let held = open("/dev/null", O_RDONLY)
+    // Numbered high, apart from those `ls` opens for itself.
+    let opened = open("/dev/null", O_RDONLY)
+    let held = fcntl(opened, F_DUPFD, 200)
+    close(opened)
     defer { close(held) }
+    #expect(held >= 200)
     let ran = try await TailscaleCertificate.run("/bin/sh", ["-c", "ls /proc/self/fd 2>/dev/null || ls /dev/fd"],
                                                  environment: [:], timeout: .seconds(10))
     let open = ran.output.split(separator: "\n").compactMap { Int($0) }
