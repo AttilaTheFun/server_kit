@@ -55,6 +55,7 @@ final class Clock: @unchecked Sendable {
     #expect(throttle.failed("2001:db8:1:2:ffff:ffff:ffff:ffff"), "the same /64")
     #expect(throttle.lockedUntil("2001:db8:1:2::c") != nil && throttle.lockedUntil("2001:db8:1:3::a") == nil)
     #expect(ClaimThrottle.place("::ffff:192.0.2.1") == "192.0.2.1")
+    #expect(ClaimThrottle.place("2001:db8:1:2:aaaa::1") == "2001:db8:1:2::/64", "written as an address is, for the log")
 }
 
 @Test func manyPlacesGuessingTogetherAreRefusedToo() {
@@ -63,6 +64,18 @@ final class Clock: @unchecked Sendable {
     for i in 0..<9 { #expect(!throttle.failed("10.1.0.\(i)")) }
     #expect(throttle.failed("10.1.0.99"), "the tenth from anywhere locks everyone")
     #expect(throttle.lockedUntil("10.9.9.9") != nil)
+}
+
+@Test func theGlobalBudgetIsOffUnlessAskedForAndNeverLocksOutTheServersOwnDevices() {
+    let clock = Clock(4_500)
+    let off = ClaimThrottle(limit: 100, now: clock.read)
+    for i in 0..<500 { off.failed("10.3.\(i / 250).\(i % 250)") }
+    #expect(off.lockedUntil("10.9.9.9") == nil, "off by default")
+    let on = ClaimThrottle(limit: 100, globalLimit: 10, now: clock.read)
+    on.succeeded("192.168.1.2")
+    for i in 0..<10 { on.failed("10.4.0.\(i)") }
+    #expect(on.lockedUntil("10.9.9.9") != nil, "strangers: locked out")
+    #expect(on.lockedUntil("192.168.1.2") == nil, "the owner's device, which claimed rightly: not")
 }
 
 @Test func aRightClaimForgetsItsWrongOnes() {

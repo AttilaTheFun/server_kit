@@ -201,6 +201,12 @@ public struct FileSessionStore: SessionStore {
             unlink(temporary)
             throw SessionStoreError("\(path) couldn't be written")
         }
+        // The rename itself made to last: the folder's entry synced.
+        let folder = open((path as NSString).deletingLastPathComponent, O_RDONLY)
+        if folder >= 0 {
+            _ = fsync(folder)
+            close(folder)
+        }
     }
 }
 

@@ -64,12 +64,15 @@ public final class PairingOffers: @unchecked Sendable {
 ///
 /// - **Where:** an IPv4 address, or an IPv6 address's /64 (one host holds a whole /64, and would walk through it), an
 ///   IPv4-mapped IPv6 address as its IPv4.
-/// - **All at once:** beyond `globalLimit` wrong claims within `window` from anywhere, every claim is refused for
-///   `lockout` too: many places guessing together are still guessing.
+/// - **All at once** (off unless `globalLimit` is given): beyond `globalLimit` wrong claims within `window` from
+///   anywhere, every claim is refused for `lockout` too (many places guessing together are still guessing), but for a
+///   place that claimed rightly within `trustedFor`: strangers on a LAN can't lock the server's own devices out.
 /// - **In memory,** at most `maxAddresses` places kept: those done with first, then the oldest.
 public final class ClaimThrottle: @unchecked Sendable {
     public let limit: Int
-    public let globalLimit: Int
+    public let globalLimit: Int?
+    /// How long a place that claimed rightly stays clear of the global lockout.
+    public let trustedFor: TimeInterval
     public let window: TimeInterval
     public let lockout: TimeInterval
     public let maxAddresses: Int
@@ -85,11 +88,14 @@ public final class ClaimThrottle: @unchecked Sendable {
     private var entries: [String: Entry] = [:]
     private var everywhere: [Date] = []
     private var everywhereLockedUntil: Date?
+    /// Places that claimed rightly, and when (at most `maxAddresses`, the oldest forgotten first).
+    private var trusted: [String: Date] = [:]
 
-    public init(limit: Int = 5, globalLimit: Int = 50, window: TimeInterval = 60, lockout: TimeInterval = 5 * 60,
-                maxAddresses: Int = 1024, now: @escaping @Sendable () -> Date = Date.init) {
+    public init(limit: Int = 5, globalLimit: Int? = nil, trustedFor: TimeInterval = 30 * 24 * 3600, window: TimeInterval = 60,
+                lockout: TimeInterval = 5 * 60, maxAddresses: Int = 1024, now: @escaping @Sendable () -> Date = Date.init) {
         self.limit = limit
         self.globalLimit = globalLimit
+        self.trustedFor = trustedFor
         self.window = window
         self.lockout = lockout
         self.maxAddresses = maxAddresses
@@ -101,7 +107,11 @@ public final class ClaimThrottle: @unchecked Sendable {
         var bare = Substring(address)
         if bare.hasPrefix("["), let close = bare.firstIndex(of: "]") { bare = bare[bare.index(after: bare.startIndex)..<close] }
         if bare.lowercased().hasPrefix("::ffff:"), IPv4.parse(bare.dropFirst(7)) != nil { return String(bare.dropFirst(7)) }
-        if let prefix = IPv6.prefix64(bare) { return prefix + "::/64" }
+        if let bytes = IPv6.parse(bare) {
+            // Its /64, written as an address is: `2001:db8:1:2::/64`.
+            let groups = stride(from: 0, to: 8, by: 2).map { String(UInt16(bytes[$0]) << 8 | UInt16(bytes[$0 + 1]), radix: 16) }
+            return groups.joined(separator: ":") + "::/64"
+        }
         return String(bare)
     }
 
@@ -110,7 +120,8 @@ public final class ClaimThrottle: @unchecked Sendable {
         let now = now(), place = Self.place(address)
         return lock.withLock {
             let own = entries[place]?.lockedUntil.flatMap { $0 > now ? $0 : nil }
-            let all = everywhereLockedUntil.flatMap { $0 > now ? $0 : nil }
+            let clear = trusted[place].map { now.timeIntervalSince($0) < trustedFor } ?? false
+            let all = clear ? nil : everywhereLockedUntil.flatMap { $0 > now ? $0 : nil }
             switch (own, all) {
             case (let a?, let b?): return max(a, b)
             case (let a?, nil): return a
@@ -136,11 +147,13 @@ public final class ClaimThrottle: @unchecked Sendable {
                 locked = true
             }
             entries[place] = entry
-            everywhere = everywhere.filter { now.timeIntervalSince($0) < window } + [now]
-            if everywhereLockedUntil.map({ $0 <= now }) ?? true, everywhere.count >= globalLimit {
-                everywhereLockedUntil = now.addingTimeInterval(lockout)
-                everywhere = []
-                locked = true
+            if let globalLimit {
+                everywhere = everywhere.filter { now.timeIntervalSince($0) < window } + [now]
+                if everywhereLockedUntil.map({ $0 <= now }) ?? true, everywhere.count >= globalLimit {
+                    everywhereLockedUntil = now.addingTimeInterval(lockout)
+                    everywhere = []
+                    locked = true
+                }
             }
             if entries.count > maxAddresses {
                 // Never a place locked out now: forgetting it would let it in again.
@@ -158,8 +171,10 @@ public final class ClaimThrottle: @unchecked Sendable {
     /// A right claim from `address`: its wrong ones forgotten (a person who mistyped, then got it right). A lockout in
     /// force stays.
     public func succeeded(_ address: String) {
-        let place = Self.place(address)
+        let now = now(), place = Self.place(address)
         lock.withLock {
+            trusted[place] = now
+            if trusted.count > maxAddresses, let oldest = trusted.min(by: { $0.value < $1.value })?.key { trusted[oldest] = nil }
             guard var entry = entries[place] else { return }
             entry.failures = []
             if entry.lockedUntil == nil { entries[place] = nil } else { entries[place] = entry }

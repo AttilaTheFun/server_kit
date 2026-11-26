@@ -40,14 +40,15 @@ let whole = String(repeating: "cd", count: 32)
 }
 
 @Test func namesNoCAVouchesForArePinned() {
-    for host in ["studio", "studio.", "mac.local", "mac.local.", "nas.lan", "box.home.arpa", "api.internal", "10.0.0.2", "[::1]"] {
+    for host in ["studio", "studio.", "mac.local", "mac.local.", "nas.lan", "box.home.arpa", "api.internal", "router.home",
+                 "nas.localdomain", "10.0.0.2", "[::1]"] {
         #expect(PinTrust.isPinned(host: host), "\(host)")
     }
     for host in ["example.com", "mac.example.ts.net", ""] { #expect(!PinTrust.isPinned(host: host), "\(host)") }
 }
 
 let example = PairingLink(scheme: "nimbus", servers: ["https://mac.example.ts.net:7445", "https://192.168.1.5:7445", "https://mac.local:7445"],
-                          paths: ["http://127.0.0.1:7480", "ssh://mac.local"],
+                          paths: ["http://127.0.0.1:7480", "ssh://mac.local", "studio", "user@studio:22"],
                           pins: PinSet([Pin(.spki, sha256: spki)!, Pin(.certificate, sha256: whole)!]), credential: .oneTimeCode("c0de"),
                           serverID: "srv-1", name: "Mac Studio", extensions: ["auth": "github"])!
 
@@ -140,4 +141,24 @@ let example = PairingLink(scheme: "nimbus", servers: ["https://mac.example.ts.ne
     #expect(PairingLink.host(of: "ssh://user@10.0.0.1") == "10.0.0.1")
     #expect(PairingLink.host(of: "https://a.example.com?x=1") == "a.example.com")
     #expect(PairingLink.host(of: "nonsense") == nil)
+}
+
+@Test func aValueEndingInADotKeepsIt() {
+    let link = PairingLink(scheme: "visor", servers: ["https://a.example.com"], credential: .password("pw."), name: "Mac.")!
+    #expect(link.text.hasSuffix("name=Mac%2E") && link.text.contains("password=pw%2E"))
+    #expect(PairingLink.parse(link.text, schemes: ["visor"]) == link, "a clean link")
+    #expect(PairingLink.parse("Here: \(link.text).", schemes: ["visor"]) == link, "in a sentence, its full stop the sentence's")
+    // A bare trailing dot is a sentence's (this kit never writes one): left out.
+    #expect(PairingLink.parse("visor://pair?server=https://a.example.com&name=Mac.", schemes: ["visor"])?.name == "Mac")
+}
+
+@Test func aLinkWithACodeAndAPasswordIsntRead() {
+    #expect(PairingLink.parse("visor://pair?server=https://a.example.com&code=c&password=p", schemes: ["visor"]) == nil)
+}
+
+@Test func bareHostPathsAreWrittenAndReadAgain() {
+    let link = PairingLink(scheme: "visor", servers: [], paths: ["studio", "user@studio:22", "[fe80::1]:22"], credential: .password("pw"))!
+    #expect(PairingLink.parse(link.text, schemes: ["visor"])?.paths == ["studio", "user@studio:22", "[fe80::1]:22"])
+    #expect(PairingLink.pathHost(of: "user@studio:22") == "studio" && PairingLink.pathHost(of: "two words") == nil)
+    #expect(PairingLink(scheme: "visor", servers: [], paths: [""], credential: .none) == nil)
 }

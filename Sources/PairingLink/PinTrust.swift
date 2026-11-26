@@ -15,8 +15,9 @@ public enum PinTrust {
         case refuse
     }
 
-    /// The suffixes of names no CA vouches for: mDNS's and the home networks' (RFC 8375, ICANN's `.internal`).
-    public static let privateSuffixes = [".local", ".lan", ".home.arpa", ".internal"]
+    /// The suffixes of names no CA vouches for: mDNS's, the home networks' (RFC 8375, ICANN's `.internal`), and those
+    /// routers and systems give themselves (`.home`, `.localdomain`).
+    public static let privateSuffixes = [".local", ".lan", ".home.arpa", ".internal", ".home", ".localdomain"]
 
     /// Whether `host` presents the server's own certificate: an IP address (v4 or v6), a single-label name, or a name
     /// under one of `privateSuffixes`.
