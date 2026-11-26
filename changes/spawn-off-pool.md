@@ -1,0 +1,1 @@
+- **TailscaleCertificate's command no longer holds Swift's threads.** Its blocking reads and its wait run on threads of their own, not the few cooperative ones. On a small machine (GitHub's 3-core macOS runner), those blocked calls stalled every other task, the timeout's watchdog included, until the command's own end.
