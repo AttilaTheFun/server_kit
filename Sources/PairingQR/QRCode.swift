@@ -13,7 +13,8 @@ public struct QRCode: Equatable, Sendable {
 
     /// The code for `text` (UTF-8), or nil when it does not fit a version
     /// 40 symbol.
-    /// The code for `text` at level M where that takes no bigger a symbol than L, else at L.
+    /// The code for `text` at level M where that takes no bigger a symbol than L, else at L (the levels this encoder
+    /// makes; Q and H take bigger symbols than a link shown on a screen needs).
     public static func best(_ text: String) -> QRCode? {
         guard let low = QRCode(text, level: .low) else { return nil }
         guard let medium = QRCode(text, level: .medium), medium.size == low.size else { return low }
@@ -371,8 +372,8 @@ public struct QRCode: Equatable, Sendable {
 
 extension QRCode {
     /// The code in a terminal: two rows of modules a line (`▀`, `▄`, `█`, a space), dark on a light background, with
-    /// `quietZone` light modules around it (the standard asks for 4; a terminal's margin often does for some).
-    public func text(quietZone: Int = 2) -> String {
+    /// `quietZone` light modules around it: the standard's 4 by default.
+    public func text(quietZone: Int = 4) -> String {
         let side = size + 2 * quietZone
         func dark(_ x: Int, _ y: Int) -> Bool {
             let mx = x - quietZone, my = y - quietZone

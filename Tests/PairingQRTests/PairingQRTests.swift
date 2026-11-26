@@ -38,6 +38,7 @@ let sizes: [(String, Int)] = [("https://10.0.0.5:7433", 2), (link, 10), (String(
     let lines = code.text(quietZone: 2).split(separator: "\n")
     #expect(lines.count == (code.size + 4 + 1) / 2 && lines.allSatisfy { $0.count == code.size + 4 })
     #expect(lines[0].allSatisfy { $0 == "█" }, "the quiet zone light")
+    #expect(code.text().split(separator: "\n").first?.count == code.size + 8, "the standard's 4 modules by default")
     let svg = code.svg(moduleSize: 8, quietZone: 4)
     #expect(svg.hasPrefix("<svg") && svg.contains("viewBox=\"0 0 \((code.size + 8) * 8) \((code.size + 8) * 8)\""))
     let pbm = code.pbm(quietZone: 4).split(separator: "\n")
@@ -99,12 +100,24 @@ func scaled(_ pbm: String, by factor: Int) -> String {
     return out
 }
 
-@Test func aReaderReadsWhatIsMade() throws {
+/// Whether there's a reader here: Vision on Apple's systems, zbar's where it's installed.
+let canRead: Bool = {
+    #if canImport(Vision)
+    return true
+    #elseif os(Linux)
+    return FileManager.default.isExecutableFile(atPath: "/usr/bin/zbarimg")
+    #else
+    return false
+    #endif
+}()
+
+@Test(.enabled(if: canRead, "no QR reader here (install zbar-tools)"))
+func aReaderReadsWhatIsMade() throws {
     for (text, _) in sizes {
         let code = try #require(QRCode(text))
-        guard let read = try read(code) else { return }
+        let read = try #require(try read(code))
         #expect(read == text, "read back at \(text.utf8.count) bytes")
     }
     let medium = try #require(QRCode(link, level: .medium))
-    if let read = try read(medium) { #expect(read == link) }
+    #expect(try read(medium) == link)
 }
