@@ -49,9 +49,11 @@ let package = Package(
             .product(name: "Crypto", package: "swift-crypto"),
         ]),
         .target(name: "ServerTLS", dependencies: [
+            "NetworkCore",
             .product(name: "NIOCore", package: "swift-nio"),
             .product(name: "NIOPosix", package: "swift-nio"),
             .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),
+            .product(name: "NIOTLS", package: "swift-nio"),
             .product(name: "NIOSSL", package: "swift-nio-ssl"),
         ]),
         .testTarget(name: "NetworkCoreTests", dependencies: ["NetworkCore"]),
@@ -68,6 +70,8 @@ let package = Package(
             "ServerTLS", "ServerIdentity",
             .product(name: "NIOCore", package: "swift-nio"),
             .product(name: "NIOPosix", package: "swift-nio"),
+            .product(name: "NIOEmbedded", package: "swift-nio"),
+            .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),
             .product(name: "NIOSSL", package: "swift-nio-ssl"),
         ]),
     ]
